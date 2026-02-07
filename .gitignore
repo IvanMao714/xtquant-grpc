@@ -18,3 +18,5 @@ pb/xtquant_pb2.pyi
 .idea/
 .vscode/
 *.swp
+
+client/

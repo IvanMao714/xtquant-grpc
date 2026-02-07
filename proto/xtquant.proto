@@ -109,9 +109,12 @@ message DownloadHistoryDataRequest {
   bool incrementally = 5;  // Incremental download
 }
 
-message DownloadHistoryDataResponse {
-  bool success = 1;
-  string message = 2;
+// Progress update for batch download (streamed per completed instrument)
+message DownloadProgress {
+  int32 total = 1;          // Total instruments to download
+  int32 finished = 2;       // Completed count so far
+  string stock_code = 3;    // Instrument just completed
+  string message = 4;       // Status message
 }
 
 message GetTradingCalendarRequest {
@@ -299,8 +302,9 @@ service MarketDataService {
   // Get sector list -> xtdata.get_sector_list
   rpc GetSectorList(Empty) returns (GetSectorListResponse);
 
-  // Download historical data -> xtdata.download_history_data
-  rpc DownloadHistoryData(DownloadHistoryDataRequest) returns (DownloadHistoryDataResponse);
+  // Download historical data (server stream) -> xtdata.download_history_data2
+  // Streams per-instrument progress; use for batch downloads with progress tracking
+  rpc DownloadHistoryData(DownloadHistoryDataRequest) returns (stream DownloadProgress);
 
   // Get trading calendar -> xtdata.get_trading_calendar
   rpc GetTradingCalendar(GetTradingCalendarRequest) returns (TradingCalendarResponse);

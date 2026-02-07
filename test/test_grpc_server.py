@@ -168,29 +168,35 @@ class TestGetSectorList:
 
 
 class TestDownloadHistoryData:
-    """gRPC DownloadHistoryData endpoint"""
+    """gRPC DownloadHistoryData streaming endpoint"""
 
     def test_download_single(self, market_stub):
-        """Download single stock daily kline"""
-        resp = market_stub.DownloadHistoryData(xtquant_pb2.DownloadHistoryDataRequest(
+        """Download single stock, verify streaming progress"""
+        progress = list(market_stub.DownloadHistoryData(xtquant_pb2.DownloadHistoryDataRequest(
             stock_codes=["600000.SH"],
             period="1d",
             start_time="20250101",
             incrementally=True,
-        ))
-        assert resp.success
-        print(f"\n  Download result: {resp.message}")
+        )))
+        assert len(progress) > 0, "No progress received"
+        last = progress[-1]
+        assert last.finished == last.total
+        print(f"\n  Download progress: {len(progress)} updates, last={last.finished}/{last.total}")
 
     def test_download_multiple(self, market_stub):
-        """Batch download"""
-        resp = market_stub.DownloadHistoryData(xtquant_pb2.DownloadHistoryDataRequest(
-            stock_codes=["600000.SH", "000001.SZ"],
+        """Batch download with progress tracking"""
+        codes = ["600000.SH", "000001.SZ"]
+        progress = list(market_stub.DownloadHistoryData(xtquant_pb2.DownloadHistoryDataRequest(
+            stock_codes=codes,
             period="1d",
             start_time="20250101",
             incrementally=True,
-        ))
-        assert resp.success
-        print(f"\n  Batch download result: {resp.message}")
+        )))
+        assert len(progress) >= len(codes), f"Expected at least {len(codes)} progress updates"
+        last = progress[-1]
+        assert last.finished == last.total == len(codes)
+        for p in progress:
+            print(f"\n  {p.finished}/{p.total} {p.stock_code} {p.message}")
 
 
 class TestGetTradingCalendar:

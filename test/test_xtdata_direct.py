@@ -148,17 +148,34 @@ class TestXtdataDownload:
     """Data download"""
 
     def test_download_history_data(self):
-        """Download single stock history (incremental)"""
+        """Download single stock via download_history_data"""
         xtdata.download_history_data(
             "600000.SH", period="1d", start_time="20250101", incrementally=True
         )
-        # Should be able to fetch data after download
         data = xtdata.get_market_data_ex(
             [], ["600000.SH"], period="1d", start_time="20250101"
         )
         assert "600000.SH" in data
         assert len(data["600000.SH"]) > 0, "No data after download"
         print(f"\n  600000.SH 2025 daily kline count after download: {len(data['600000.SH'])}")
+
+    def test_download_history_data2_with_callback(self):
+        """Batch download via download_history_data2 with progress callback"""
+        progress_log = []
+
+        def on_progress(data):
+            progress_log.append(data)
+
+        codes = ["600000.SH", "000001.SZ"]
+        xtdata.download_history_data2(
+            codes, period="1d", start_time="20250101", callback=on_progress,
+        )
+        assert len(progress_log) > 0, "Callback was never invoked"
+        last = progress_log[-1]
+        assert last["finished"] == last["total"], "Not all downloads completed"
+        print(f"\n  download_history_data2 progress: {len(progress_log)} callbacks")
+        for p in progress_log:
+            print(f"    {p['finished']}/{p['total']} {p.get('stockcode', '')}")
 
 
 class TestXtdataFinancial:

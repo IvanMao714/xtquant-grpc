@@ -118,6 +118,22 @@ for pos in resp.positions:
     print(f"{pos.stock_code} volume={pos.volume} available={pos.can_use_volume} cost={pos.avg_price}")
 ```
 
+### Download Historical Data (Streaming Progress)
+
+```python
+# Batch download with real-time progress tracking
+for progress in market.DownloadHistoryData(xtquant_pb2.DownloadHistoryDataRequest(
+    stock_codes=["600000.SH", "000001.SZ", "000300.SH"],
+    period="1d",
+    start_time="20240101",
+)):
+    print(f"[{progress.finished}/{progress.total}] {progress.stock_code} done")
+# Output:
+# [1/3] 600000.SH done
+# [2/3] 000001.SZ done
+# [3/3] 000300.SH done
+```
+
 ### Subscribe to Real-time Quotes (Streaming)
 
 ```python
@@ -164,7 +180,7 @@ for event in trading.SubscribeTrading(xtquant_pb2.AccountRequest(
 | `GetInstrumentDetail` | Unary | Get instrument info | `get_instrument_detail` |
 | `GetStockList` | Unary | Get sector constituents | `get_stock_list_in_sector` |
 | `GetSectorList` | Unary | Get sector list | `get_sector_list` |
-| `DownloadHistoryData` | Unary | Download historical data | `download_history_data` |
+| `DownloadHistoryData` | Stream | Download historical data with progress | `download_history_data2` |
 | `GetTradingCalendar` | Unary | Get trading calendar | `get_trading_calendar` |
 | `GetFinancialData` | Unary | Get financial data | `get_financial_data` |
 | `SubscribeQuote` | Stream | Subscribe single-stock quotes | `subscribe_quote` |

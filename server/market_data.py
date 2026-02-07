@@ -126,19 +126,57 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
         return xtquant_pb2.GetSectorListResponse(sectors=sectors)
 
     def DownloadHistoryData(self, request, context):
-        """Download historical data to local -> xtdata.download_history_data"""
-        for code in request.stock_codes:
-            xtdata.download_history_data(
-                code,
+        """Download historical data (server stream) -> xtdata.download_history_data2
+
+        Uses the batch download API with a progress callback.
+        Yields a DownloadProgress message each time an instrument completes.
+        """
+        progress_queue: queue.Queue = queue.Queue()
+
+        def on_progress(data):
+            # data = {'finished': 1, 'total': 50, 'stockcode': '000001.SZ', 'message': ''}
+            progress_queue.put(data)
+
+        codes = list(request.stock_codes)
+        total = len(codes)
+
+        # download_history_data2 is synchronous and blocks until all done,
+        # so run it in a background thread to allow streaming progress
+        import threading
+        download_done = threading.Event()
+
+        def do_download():
+            xtdata.download_history_data2(
+                codes,
                 period=request.period or "1d",
                 start_time=request.start_time,
                 end_time=request.end_time,
-                incrementally=True if request.incrementally else None,
+                callback=on_progress,
             )
-        return xtquant_pb2.DownloadHistoryDataResponse(
-            success=True,
-            message=f"Download completed: {len(request.stock_codes)} instruments",
-        )
+            download_done.set()
+
+        threading.Thread(target=do_download, daemon=True).start()
+
+        finished_count = 0
+        while not download_done.is_set() or not progress_queue.empty():
+            try:
+                data = progress_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            finished_count = data.get("finished", finished_count)
+            yield xtquant_pb2.DownloadProgress(
+                total=data.get("total", total),
+                finished=finished_count,
+                stock_code=data.get("stockcode", ""),
+                message=data.get("message", ""),
+            )
+
+        # Final message if nothing was yielded (e.g. empty list)
+        if finished_count == 0 and total == 0:
+            yield xtquant_pb2.DownloadProgress(
+                total=0, finished=0, stock_code="", message="No instruments to download",
+            )
 
     def GetTradingCalendar(self, request, context):
         """Get trading calendar -> xtdata.get_trading_calendar"""
