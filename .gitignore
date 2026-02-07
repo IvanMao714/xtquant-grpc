@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Generated protobuf code
+pb/xtquant_pb2.py
+pb/xtquant_pb2_grpc.py
+pb/xtquant_pb2.pyi
+
+# IDE
+.idea/
+.vscode/
+*.swp

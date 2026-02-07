@@ -1,0 +1,340 @@
+syntax = "proto3";
+
+package xtquant;
+
+message Empty {}
+
+// ====================== Market Data Types ======================
+
+// Kline bar
+message KlineBar {
+  int64 time = 1;               // Timestamp (milliseconds)
+  double open = 2;              // Open price
+  double high = 3;              // High price
+  double low = 4;               // Low price
+  double close = 5;             // Close price
+  double volume = 6;            // Volume
+  double amount = 7;            // Turnover
+  double pre_close = 8;         // Previous close
+  int32 suspend_flag = 9;       // Suspension flag
+  double settlement_price = 10; // Settlement price (futures)
+  double open_interest = 11;    // Open interest (futures)
+}
+
+// Kline series for a single stock
+message StockKlines {
+  repeated KlineBar bars = 1;
+}
+
+// Tick snapshot
+message TickSnapshot {
+  string stock_code = 1;
+  int64 time = 2;
+  double last_price = 3;          // Latest price
+  double open = 4;
+  double high = 5;
+  double low = 6;
+  double last_close = 7;          // Previous close
+  double volume = 8;
+  double amount = 9;
+  repeated double bid_price = 10;  // Bid prices (up to 5 levels)
+  repeated double bid_volume = 11; // Bid volumes
+  repeated double ask_price = 12;  // Ask prices
+  repeated double ask_volume = 13; // Ask volumes
+}
+
+// Instrument detail
+message InstrumentDetail {
+  string exchange_id = 1;
+  string instrument_id = 2;
+  string instrument_name = 3;
+  string product_id = 4;         // Product ID (futures)
+  double up_stop_price = 5;      // Upper limit price
+  double down_stop_price = 6;    // Lower limit price
+  double pre_close = 7;
+  string open_date = 8;          // Listing date
+  double price_tick = 9;         // Minimum price increment
+  int32 volume_multiple = 10;    // Contract multiplier
+  int64 total_volume = 11;       // Total shares
+  int64 float_volume = 12;       // Float shares
+  string extra_json = 13;        // Full fields JSON (when is_complete=true)
+}
+
+// ====================== Market Data Request/Response ======================
+
+message GetMarketDataRequest {
+  repeated string stock_codes = 1;  // Instrument codes, e.g. ["600000.SH"]
+  string period = 2;                // Period: tick, 1m, 5m, 15m, 30m, 1h, 1d, 1w
+  string start_time = 3;            // Start time, e.g. "20240101"
+  string end_time = 4;              // End time
+  int32 count = 5;                  // Number of bars, 0=all, -1=all
+  string dividend_type = 6;         // Adjustment: none, front, back, front_ratio, back_ratio
+  bool fill_data = 7;               // Whether to fill missing data
+}
+
+message GetMarketDataResponse {
+  map<string, StockKlines> data = 1;
+}
+
+message GetFullTickRequest {
+  repeated string stock_codes = 1;  // Instrument or market codes, e.g. ["SH","SZ"]
+}
+
+message GetFullTickResponse {
+  map<string, TickSnapshot> ticks = 1;
+}
+
+message GetInstrumentDetailRequest {
+  string stock_code = 1;
+  bool is_complete = 2;  // Whether to fetch all fields
+}
+
+message GetStockListRequest {
+  string sector_name = 1;  // Sector name
+}
+
+message StockListResponse {
+  repeated string stock_codes = 1;
+}
+
+message GetSectorListResponse {
+  repeated string sectors = 1;
+}
+
+message DownloadHistoryDataRequest {
+  repeated string stock_codes = 1;
+  string period = 2;
+  string start_time = 3;
+  string end_time = 4;
+  bool incrementally = 5;  // Incremental download
+}
+
+message DownloadHistoryDataResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GetTradingCalendarRequest {
+  string market = 1;      // Market code, e.g. "SH"
+  string start_time = 2;
+  string end_time = 3;
+}
+
+message TradingCalendarResponse {
+  repeated string dates = 1;
+}
+
+message GetFinancialDataRequest {
+  repeated string stock_codes = 1;
+  repeated string table_list = 2;  // Balance, Income, CashFlow, Capital, etc.
+  string start_time = 3;
+  string end_time = 4;
+}
+
+message GetFinancialDataResponse {
+  string data_json = 1;  // Financial data in JSON format
+}
+
+message SubscribeQuoteRequest {
+  string stock_code = 1;
+  string period = 2;       // Period
+  int32 count = 3;         // Historical bar count, 0=new data only
+}
+
+message QuoteUpdate {
+  string stock_code = 1;
+  string period = 2;
+  repeated KlineBar bars = 3;
+}
+
+message SubscribeWholeQuoteRequest {
+  repeated string code_list = 1;  // Market codes ["SH","SZ"] or instrument codes
+}
+
+// ====================== Trading Data Types ======================
+
+message AccountRequest {
+  string account_id = 1;     // Account ID
+  string account_type = 2;   // STOCK, CREDIT, FUTURE
+}
+
+message AssetInfo {
+  string account_id = 1;
+  double cash = 2;            // Available cash
+  double frozen_cash = 3;     // Frozen cash
+  double market_value = 4;    // Position market value
+  double total_asset = 5;     // Total asset
+}
+
+message OrderInfo {
+  string account_id = 1;
+  string stock_code = 2;
+  int64 order_id = 3;
+  string order_sysid = 4;     // Exchange order ID
+  int64 order_time = 5;
+  int32 order_type = 6;       // Order type (xtconstant)
+  int32 order_volume = 7;
+  double price = 8;
+  int32 traded_volume = 9;
+  double traded_price = 10;
+  int32 order_status = 11;    // Order status (48=unreported ~ 57=rejected, 255=unknown)
+  string status_msg = 12;
+  string strategy_name = 13;
+  string order_remark = 14;
+}
+
+message TradeInfo {
+  string account_id = 1;
+  string stock_code = 2;
+  string traded_id = 3;
+  int64 traded_time = 4;
+  double traded_price = 5;
+  int32 traded_volume = 6;
+  double traded_amount = 7;
+  int64 order_id = 8;
+  string order_sysid = 9;
+  string strategy_name = 10;
+  string order_remark = 11;
+}
+
+message PositionInfo {
+  string account_id = 1;
+  string stock_code = 2;
+  int32 volume = 3;            // Position quantity
+  int32 can_use_volume = 4;    // Available quantity
+  double open_price = 5;       // Open price
+  double market_value = 6;
+  int32 frozen_volume = 7;
+  double avg_price = 8;        // Cost price
+}
+
+// ====================== Trading Request/Response ======================
+
+message OrderStockRequest {
+  string account_id = 1;
+  string account_type = 2;     // STOCK / CREDIT / FUTURE
+  string stock_code = 3;
+  int32 order_type = 4;        // Order type (xtconstant: STOCK_BUY=23, STOCK_SELL=24)
+  int32 volume = 5;
+  int32 price_type = 6;        // Price type (xtconstant: LATEST_PRICE=5, FIX_PRICE=11)
+  double price = 7;
+  string strategy_name = 8;
+  string order_remark = 9;
+}
+
+message OrderStockResponse {
+  int64 order_id = 1;
+  bool success = 2;
+  string message = 3;
+}
+
+message CancelOrderRequest {
+  string account_id = 1;
+  string account_type = 2;
+  int64 order_id = 3;
+}
+
+message CancelOrderResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message QueryOrdersRequest {
+  string account_id = 1;
+  string account_type = 2;
+  bool cancelable_only = 3;  // Return only cancelable orders
+}
+
+message QueryOrdersResponse {
+  repeated OrderInfo orders = 1;
+}
+
+message QueryTradesResponse {
+  repeated TradeInfo trades = 1;
+}
+
+message QueryPositionsResponse {
+  repeated PositionInfo positions = 1;
+}
+
+// Trading event push (streaming)
+message TradingEvent {
+  oneof event {
+    OrderInfo order_update = 1;
+    TradeInfo trade_update = 2;
+    OrderErrorInfo order_error = 3;
+    CancelErrorInfo cancel_error = 4;
+    string disconnected = 5;
+  }
+}
+
+message OrderErrorInfo {
+  int64 order_id = 1;
+  int32 error_id = 2;
+  string error_msg = 3;
+}
+
+message CancelErrorInfo {
+  int64 order_id = 1;
+  int32 error_id = 2;
+  string error_msg = 3;
+}
+
+// ====================== Service Definitions ======================
+
+// Market data service — wraps xtquant.xtdata
+service MarketDataService {
+  // Get kline data -> xtdata.get_market_data_ex
+  rpc GetMarketData(GetMarketDataRequest) returns (GetMarketDataResponse);
+
+  // Get real-time tick snapshot -> xtdata.get_full_tick
+  rpc GetFullTick(GetFullTickRequest) returns (GetFullTickResponse);
+
+  // Get instrument detail -> xtdata.get_instrument_detail
+  rpc GetInstrumentDetail(GetInstrumentDetailRequest) returns (InstrumentDetail);
+
+  // Get sector constituents -> xtdata.get_stock_list_in_sector
+  rpc GetStockList(GetStockListRequest) returns (StockListResponse);
+
+  // Get sector list -> xtdata.get_sector_list
+  rpc GetSectorList(Empty) returns (GetSectorListResponse);
+
+  // Download historical data -> xtdata.download_history_data
+  rpc DownloadHistoryData(DownloadHistoryDataRequest) returns (DownloadHistoryDataResponse);
+
+  // Get trading calendar -> xtdata.get_trading_calendar
+  rpc GetTradingCalendar(GetTradingCalendarRequest) returns (TradingCalendarResponse);
+
+  // Get financial data -> xtdata.get_financial_data
+  rpc GetFinancialData(GetFinancialDataRequest) returns (GetFinancialDataResponse);
+
+  // Subscribe to single-stock quotes (server stream) -> xtdata.subscribe_quote
+  rpc SubscribeQuote(SubscribeQuoteRequest) returns (stream QuoteUpdate);
+
+  // Subscribe to full-market quotes (server stream) -> xtdata.subscribe_whole_quote
+  rpc SubscribeWholeQuote(SubscribeWholeQuoteRequest) returns (stream TickSnapshot);
+}
+
+// Trading service — wraps xtquant.xttrader
+service TradingService {
+  // Place order -> xt_trader.order_stock
+  rpc OrderStock(OrderStockRequest) returns (OrderStockResponse);
+
+  // Cancel order -> xt_trader.cancel_order_stock
+  rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse);
+
+  // Query asset -> xt_trader.query_stock_asset
+  rpc QueryAsset(AccountRequest) returns (AssetInfo);
+
+  // Query orders -> xt_trader.query_stock_orders
+  rpc QueryOrders(QueryOrdersRequest) returns (QueryOrdersResponse);
+
+  // Query trades -> xt_trader.query_stock_trades
+  rpc QueryTrades(AccountRequest) returns (QueryTradesResponse);
+
+  // Query positions -> xt_trader.query_stock_positions
+  rpc QueryPositions(AccountRequest) returns (QueryPositionsResponse);
+
+  // Subscribe to trading events (server stream) -> xt_trader.subscribe + callbacks
+  rpc SubscribeTrading(AccountRequest) returns (stream TradingEvent);
+}

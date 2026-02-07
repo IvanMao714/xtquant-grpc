@@ -1,0 +1,63 @@
+"""xtquant gRPC server entry point
+
+Usage:
+    # Market data service only
+    python main.py --port 50051
+
+    # Market data + trading service
+    python main.py --port 50051 --mini-qmt-path "D:\\path\\to\\userdata_mini"
+"""
+
+import argparse
+import logging
+import time
+from concurrent import futures
+
+import grpc
+from pb import xtquant_pb2_grpc
+from server import MarketDataServicer, TradingServicer
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+)
+logger = logging.getLogger("xtquant-grpc")
+
+
+def serve(port: int, mini_qmt_path: str, session_id: int):
+    """Create and start the gRPC server."""
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+
+    # Register market data service (always available)
+    xtquant_pb2_grpc.add_MarketDataServiceServicer_to_server(MarketDataServicer(), server)
+    logger.info("Market data service registered")
+
+    # Register trading service (requires MiniQMT path)
+    if mini_qmt_path:
+        sid = session_id or int(time.time())
+        trading = TradingServicer(mini_qmt_path, sid)
+        xtquant_pb2_grpc.add_TradingServiceServicer_to_server(trading, server)
+        logger.info("Trading service registered (session_id=%d)", sid)
+    else:
+        logger.warning("--mini-qmt-path not specified, trading service disabled")
+
+    server.add_insecure_port(f"[::]:{port}")
+    server.start()
+    logger.info("gRPC server started, listening on port %d", port)
+    server.wait_for_termination()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="xtquant gRPC server")
+    parser.add_argument("--port", type=int, default=50051, help="gRPC listen port (default: 50051)")
+    parser.add_argument("--mini-qmt-path", type=str, default="",
+                        help="MiniQMT userdata_mini path; market-data only if omitted")
+    parser.add_argument("--session-id", type=int, default=0,
+                        help="Trading session ID (default: current timestamp)")
+    args = parser.parse_args()
+
+    serve(args.port, args.mini_qmt_path, args.session_id)
+
+
+if __name__ == "__main__":
+    main()
