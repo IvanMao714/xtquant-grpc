@@ -7,6 +7,7 @@ supporting kline queries, tick snapshots, streaming subscriptions, etc.
 import json
 import queue
 import logging
+import threading
 
 import grpc
 import pandas as pd
@@ -142,7 +143,6 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
 
         # download_history_data2 is synchronous and blocks until all done,
         # so run it in a background thread to allow streaming progress
-        import threading
         download_done = threading.Event()
 
         def do_download():
@@ -156,6 +156,11 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
             download_done.set()
 
         threading.Thread(target=do_download, daemon=True).start()
+
+        # Yield an initial message so the client knows the download has started
+        yield xtquant_pb2.DownloadProgress(
+            total=total, finished=0, stock_code="", message=f"Starting download: {total} instruments",
+        )
 
         finished_count = 0
         while not download_done.is_set() or not progress_queue.empty():
