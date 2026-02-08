@@ -199,23 +199,30 @@ class TestDownloadHistoryData:
             print(f"\n  {p.finished}/{p.total} {p.stock_code} {p.message}")
 
 
-class TestGetTradingCalendar:
-    """gRPC GetTradingCalendar endpoint"""
+class TestGetTradingDates:
+    """gRPC GetTradingDates endpoint"""
 
-    def test_sh_calendar_2024(self, market_stub):
-        """Get 2024 SSE trading calendar (may not be supported in some QMT versions)"""
-        import pytest
-        try:
-            resp = market_stub.GetTradingCalendar(xtquant_pb2.GetTradingCalendarRequest(
-                market="SH",
-                start_time="20240101",
-                end_time="20241231",
-            ))
-            assert len(resp.dates) > 200, f"Too few 2024 trading days: {len(resp.dates)}"
-            print(f"\n  2024 trading days: {len(resp.dates)}")
-            print(f"  first={resp.dates[0]} last={resp.dates[-1]}")
-        except Exception as e:
-            pytest.skip(f"get_trading_calendar not supported in this QMT version: {e}")
+    def test_sh_dates_2024(self, market_stub):
+        """Get 2024 SSE trading dates (millisecond timestamps)"""
+        resp = market_stub.GetTradingDates(xtquant_pb2.GetTradingDatesRequest(
+            market="SH",
+            start_time="20240101",
+            end_time="20241231",
+        ))
+        assert len(resp.dates) > 200, f"Too few 2024 trading days: {len(resp.dates)}"
+        # Values are millisecond timestamps; 2024-01-01 ~ 1704067200000
+        assert resp.dates[0] > 1704000000000
+        print(f"\n  2024 trading days: {len(resp.dates)}")
+        print(f"  first_ts={resp.dates[0]} last_ts={resp.dates[-1]}")
+
+    def test_count_param(self, market_stub):
+        """Get last N trading dates"""
+        resp = market_stub.GetTradingDates(xtquant_pb2.GetTradingDatesRequest(
+            market="SH",
+            count=10,
+        ))
+        assert len(resp.dates) == 10, f"Expected 10 dates, got {len(resp.dates)}"
+        print(f"\n  Last 10 trading dates: {resp.dates}")
 
 
 class TestGetFinancialData:

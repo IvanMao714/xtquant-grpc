@@ -126,14 +126,15 @@ message DownloadProgress {
   string message = 4;       // Status message
 }
 
-message GetTradingCalendarRequest {
+message GetTradingDatesRequest {
   string market = 1;      // Market code, e.g. "SH"
-  string start_time = 2;
+  string start_time = 2;  // e.g. "20240101"
   string end_time = 3;
+  int32 count = 4;        // Number of dates, -1=all (default)
 }
 
-message TradingCalendarResponse {
-  repeated string dates = 1;
+message GetTradingDatesResponse {
+  repeated int64 dates = 1;  // Millisecond timestamps
 }
 
 message GetFinancialDataRequest {
@@ -315,8 +316,8 @@ service MarketDataService {
   // Streams per-instrument progress; use for batch downloads with progress tracking
   rpc DownloadHistoryData(DownloadHistoryDataRequest) returns (stream DownloadProgress);
 
-  // Get trading calendar -> xtdata.get_trading_calendar
-  rpc GetTradingCalendar(GetTradingCalendarRequest) returns (TradingCalendarResponse);
+  // Get trading dates -> xtdata.get_trading_dates
+  rpc GetTradingDates(GetTradingDatesRequest) returns (GetTradingDatesResponse);
 
   // Get financial data -> xtdata.get_financial_data
   rpc GetFinancialData(GetFinancialDataRequest) returns (GetFinancialDataResponse);

@@ -193,14 +193,16 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
                 total=0, finished=0, stock_code="", message="No instruments to download",
             )
 
-    def GetTradingCalendar(self, request, context):
-        """Get trading calendar -> xtdata.get_trading_calendar"""
-        dates = xtdata.get_trading_calendar(
+    def GetTradingDates(self, request, context):
+        """Get trading dates -> xtdata.get_trading_dates"""
+        count = request.count if request.count != 0 else -1
+        dates = xtdata.get_trading_dates(
             request.market or "SH",
             start_time=request.start_time,
             end_time=request.end_time,
+            count=count,
         )
-        return xtquant_pb2.TradingCalendarResponse(dates=[str(d) for d in dates])
+        return xtquant_pb2.GetTradingDatesResponse(dates=[int(d) for d in dates])
 
     def GetFinancialData(self, request, context):
         """Get financial data (JSON response) -> xtdata.get_financial_data

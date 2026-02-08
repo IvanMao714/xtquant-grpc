@@ -181,7 +181,7 @@ for event in trading.SubscribeTrading(xtquant_pb2.AccountRequest(
 | `GetStockList` | Unary | Get sector constituents | `get_stock_list_in_sector` |
 | `GetSectorList` | Unary | Get sector list | `get_sector_list` |
 | `DownloadHistoryData` | Stream | Download historical data with progress | `download_history_data2` |
-| `GetTradingCalendar` | Unary | Get trading calendar | `get_trading_calendar` |
+| `GetTradingDates` | Unary | Get trading dates (ms timestamps) | `get_trading_dates` |
 | `GetFinancialData` | Unary | Get financial data | `get_financial_data` |
 | `SubscribeQuote` | Stream | Subscribe single-stock quotes | `subscribe_quote` |
 | `SubscribeWholeQuote` | Stream | Subscribe full-market quotes | `subscribe_whole_quote` |

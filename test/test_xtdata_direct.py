@@ -133,15 +133,11 @@ class TestXtdataCalendar:
         assert dates[-1] < 1735700000000, f"Abnormal last date ts: {dates[-1]}"
         print(f"\n  2024 trading days: {len(dates)}, first_ts={dates[0]}, last_ts={dates[-1]}")
 
-    def test_get_trading_calendar(self):
-        """Get trading calendar (may not be supported in some QMT versions)"""
-        import pytest
-        try:
-            dates = xtdata.get_trading_calendar("SH", start_time="20240101", end_time="20241231")
-            assert len(dates) > 200
-            print(f"\n  2024 trading days: {len(dates)}")
-        except RuntimeError as e:
-            pytest.skip(f"get_trading_calendar not supported in this QMT version: {e}")
+    def test_get_trading_dates_with_count(self):
+        """Get last N trading dates"""
+        dates = xtdata.get_trading_dates("SH", count=10)
+        assert len(dates) == 10, f"Expected 10 dates, got {len(dates)}"
+        print(f"\n  Last 10 trading date timestamps: {dates}")
 
 
 class TestXtdataDownload:
