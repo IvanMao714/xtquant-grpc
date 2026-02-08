@@ -26,7 +26,14 @@ logger = logging.getLogger("xtquant-grpc")
 
 def serve(port: int, mini_qmt_path: str, session_id: int):
     """Create and start the gRPC server."""
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    MAX_MSG = 1024 * 1024 * 1024  # 1 GB
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=10),
+        options=[
+            ("grpc.max_send_message_length", MAX_MSG),
+            ("grpc.max_receive_message_length", MAX_MSG),
+        ],
+    )
 
     # Register market data service (always available)
     xtquant_pb2_grpc.add_MarketDataServiceServicer_to_server(MarketDataServicer(), server)
