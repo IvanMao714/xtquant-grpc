@@ -6,24 +6,20 @@ message Empty {}
 
 // ====================== Market Data Types ======================
 
-// Kline bar
+// Kline bar (flat record, ready for DB storage)
 message KlineBar {
-  int64 time = 1;               // Timestamp (milliseconds)
-  double open = 2;              // Open price
-  double high = 3;              // High price
-  double low = 4;               // Low price
-  double close = 5;             // Close price
-  double volume = 6;            // Volume
-  double amount = 7;            // Turnover
-  double pre_close = 8;         // Previous close
-  int32 suspend_flag = 9;       // Suspension flag
-  double settlement_price = 10; // Settlement price (futures)
-  double open_interest = 11;    // Open interest (futures)
-}
-
-// Kline series for a single stock
-message StockKlines {
-  repeated KlineBar bars = 1;
+  string stock_code = 1;        // Instrument code, e.g. "600000.SH"
+  int64 time = 2;               // Raw timestamp from xtdata (yyyymmdd for daily, ms for intraday)
+  double open = 3;              // Open price
+  double high = 4;              // High price
+  double low = 5;               // Low price
+  double close = 6;             // Close price
+  double volume = 7;            // Volume
+  double amount = 8;            // Turnover
+  double pre_close = 9;         // Previous close
+  int32 suspend_flag = 10;      // Suspension flag
+  double settlement_price = 11; // Settlement price (futures)
+  double open_interest = 12;    // Open interest (futures)
 }
 
 // Tick snapshot
@@ -72,8 +68,21 @@ message GetMarketDataRequest {
   bool fill_data = 7;               // Whether to fill missing data
 }
 
+// Columnar market data response — parallel arrays for fast DataFrame construction
+// All arrays have the same length; index i corresponds to the same row.
 message GetMarketDataResponse {
-  map<string, StockKlines> data = 1;
+  repeated string stock_code = 1;
+  repeated int64 time = 2;
+  repeated double open = 3;
+  repeated double high = 4;
+  repeated double low = 5;
+  repeated double close = 6;
+  repeated double volume = 7;
+  repeated double amount = 8;
+  repeated double pre_close = 9;
+  repeated int32 suspend_flag = 10;
+  repeated double settlement_price = 11;
+  repeated double open_interest = 12;
 }
 
 message GetFullTickRequest {

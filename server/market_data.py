@@ -21,27 +21,31 @@ logger = logging.getLogger(__name__)
 # ====================== Data Conversion Helpers ======================
 
 
-def _df_to_kline_bars(df: pd.DataFrame) -> list[xtquant_pb2.KlineBar]:
-    """Convert an xtdata DataFrame to a list of KlineBar messages.
+def _append_df_columns(code: str, df: pd.DataFrame, cols: dict):
+    """Append one stock's DataFrame rows into the columnar response dict.
 
-    The DataFrame index is timestamp (ms), columns include open/high/low/close, etc.
+    Uses vectorized pandas operations instead of row-by-row iteration.
     """
-    bars = []
-    for ts, row in df.iterrows():
-        bars.append(xtquant_pb2.KlineBar(
-            time=int(ts),
-            open=float(row.get("open", 0)),
-            high=float(row.get("high", 0)),
-            low=float(row.get("low", 0)),
-            close=float(row.get("close", 0)),
-            volume=float(row.get("volume", 0)),
-            amount=float(row.get("amount", 0)),
-            pre_close=float(row.get("preClose", 0)),
-            suspend_flag=int(row["suspendFlag"]) if pd.notna(row.get("suspendFlag")) else 0,
-            settlement_price=float(row.get("settelmentPrice", 0)),
-            open_interest=float(row.get("openInterest", 0)),
-        ))
-    return bars
+    n = len(df)
+    if n == 0:
+        return
+
+    cols["stock_code"].extend([code] * n)
+    cols["time"].extend(int(t) for t in df.index)
+    cols["open"].extend(df["open"].astype(float).tolist())
+    cols["high"].extend(df["high"].astype(float).tolist())
+    cols["low"].extend(df["low"].astype(float).tolist())
+    cols["close"].extend(df["close"].astype(float).tolist())
+    cols["volume"].extend(df["volume"].astype(float).tolist())
+    cols["amount"].extend(df["amount"].astype(float).tolist())
+    cols["pre_close"].extend(df["preClose"].astype(float).fillna(0).tolist())
+    cols["suspend_flag"].extend(df["suspendFlag"].fillna(0).astype(int).tolist())
+    cols["settlement_price"].extend(
+        df["settelmentPrice"].astype(float).fillna(0).tolist() if "settelmentPrice" in df.columns else [0.0] * n
+    )
+    cols["open_interest"].extend(
+        df["openInterest"].astype(float).fillna(0).tolist() if "openInterest" in df.columns else [0.0] * n
+    )
 
 
 def _tick_to_snapshot(code: str, tick: dict) -> xtquant_pb2.TickSnapshot:
@@ -83,9 +87,14 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
             dividend_type=request.dividend_type or "none",
             fill_data=request.fill_data,
         )
-        result = {code: xtquant_pb2.StockKlines(bars=_df_to_kline_bars(df))
-                  for code, df in data.items()}
-        return xtquant_pb2.GetMarketDataResponse(data=result)
+        cols = {k: [] for k in [
+            "stock_code", "time", "open", "high", "low", "close",
+            "volume", "amount", "pre_close", "suspend_flag",
+            "settlement_price", "open_interest",
+        ]}
+        for code, df in data.items():
+            _append_df_columns(code, df, cols)
+        return xtquant_pb2.GetMarketDataResponse(**cols)
 
     def GetFullTick(self, request, context):
         """Get real-time tick snapshot -> xtdata.get_full_tick"""
@@ -136,6 +145,7 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
 
         def on_progress(data):
             # data = {'finished': 1, 'total': 50, 'stockcode': '000001.SZ', 'message': ''}
+            logger.info(f"Download progress: {data}", flush=True)
             progress_queue.put(data)
 
         codes = list(request.stock_codes)
@@ -242,6 +252,7 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
             for code, items in datas.items():
                 item_list = items if isinstance(items, list) else [items]
                 bars = [xtquant_pb2.KlineBar(
+                    stock_code=code,
                     time=int(it.get("time", 0)),
                     open=float(it.get("open", 0)),
                     high=float(it.get("high", 0)),
