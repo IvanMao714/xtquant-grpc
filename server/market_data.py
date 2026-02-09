@@ -21,27 +21,6 @@ logger = logging.getLogger(__name__)
 # ====================== Data Conversion Helpers ======================
 
 
-_CST_OFFSET_MS = 8 * 3600 * 1000  # UTC+8 in milliseconds
-_MS_PER_DAY = 86400 * 1000
-
-
-def _ms_to_date_int(ms_series: pd.Series) -> list:
-    """Convert millisecond timestamps to YYYYMMDD integers in CST (UTC+8).
-
-    xtdata stores time as ms-timestamps; the DataFrame index is the UTC date
-    which is 1 day behind Chinese time.  We use the ``time`` column instead
-    and convert properly to China Standard Time.
-
-    Uses pure arithmetic (add UTC+8 offset, then epoch-day lookup) instead of
-    pandas tz_convert + strftime for ~10x speed on millions of rows.
-    """
-    # Shift to CST, then truncate to day boundary
-    cst_days = (ms_series.values + _CST_OFFSET_MS) // _MS_PER_DAY
-    # Vectorised: epoch days -> datetime64[D] -> YYYYMMDD int
-    dates = pd.to_datetime(cst_days, unit="D")
-    return (dates.year * 10000 + dates.month * 100 + dates.day).tolist()
-
-
 def _append_df_columns(code: str, df: pd.DataFrame, cols: dict):
     """Append one stock's DataFrame rows into the columnar response dict.
 
@@ -52,9 +31,10 @@ def _append_df_columns(code: str, df: pd.DataFrame, cols: dict):
         return
 
     cols["stock_code"].extend([code] * n)
-    # Use the 'time' column (ms timestamps) and convert to CST YYYYMMDD,
-    # NOT df.index which is UTC-based and off by 1 day for Chinese stocks.
-    cols["time"].extend(_ms_to_date_int(df["time"]))
+    # Pass raw millisecond timestamps from the 'time' column directly.
+    # DO NOT use df.index — it contains UTC dates which are off by 1 day
+    # for Chinese stocks.  Let the client convert to local time.
+    cols["time"].extend(df["time"].astype(int).tolist())
     cols["open"].extend(df["open"].astype(float).tolist())
     cols["high"].extend(df["high"].astype(float).tolist())
     cols["low"].extend(df["low"].astype(float).tolist())
