@@ -14,6 +14,7 @@ import time
 from concurrent import futures
 
 import grpc
+from xtquant import xtdata
 from pb import xtquant_pb2_grpc
 from server import MarketDataServicer, TradingServicer
 
@@ -24,8 +25,31 @@ logging.basicConfig(
 logger = logging.getLogger("xtquant-grpc")
 
 
+def wait_for_xtdata(timeout: int = 300, interval: int = 3):
+    """Block until xtdata is connected to MiniQMT.
+
+    Tries calling xtdata.get_trading_dates as a lightweight probe.
+    Retries every `interval` seconds, up to `timeout` seconds total.
+    """
+    logger.info("Waiting for xtdata connection (timeout=%ds) ...", timeout)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            dates = xtdata.get_trading_dates("SH", count=1)
+            if dates:
+                logger.info("xtdata connected successfully")
+                return
+        except Exception:
+            pass
+        time.sleep(interval)
+    raise RuntimeError(f"xtdata failed to connect within {timeout}s — is MiniQMT running?")
+
+
 def serve(port: int, mini_qmt_path: str, session_id: int):
     """Create and start the gRPC server."""
+    # Ensure xtdata is ready before accepting any gRPC requests
+    wait_for_xtdata()
+
     MAX_MSG = 1024 * 1024 * 1024  # 1 GB
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=10),
