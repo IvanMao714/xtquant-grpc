@@ -30,6 +30,17 @@ def _append_df_columns(code: str, df: pd.DataFrame, cols: dict):
     if n == 0:
         return
 
+    # Debug: log index format for the first stock processed
+    if not cols["stock_code"]:
+        logger.info(
+            "DataFrame debug: code=%s, index_type=%s, index[:3]=%s, columns=%s, "
+            "has_time_col=%s",
+            code, type(df.index).__name__, list(df.index[:3]),
+            df.columns.tolist(), "time" in df.columns,
+        )
+        if "time" in df.columns:
+            logger.info("  time column[:3]=%s", df["time"].tolist()[:3])
+
     cols["stock_code"].extend([code] * n)
     cols["time"].extend(int(t) for t in df.index)
     cols["open"].extend(df["open"].astype(float).tolist())
