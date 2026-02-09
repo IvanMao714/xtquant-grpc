@@ -21,6 +21,22 @@ logger = logging.getLogger(__name__)
 # ====================== Data Conversion Helpers ======================
 
 
+def _ms_to_date_int(ms_series: pd.Series) -> list:
+    """Convert millisecond timestamps to YYYYMMDD integers in CST (UTC+8).
+
+    xtdata stores time as ms-timestamps; the DataFrame index is the UTC date
+    which is 1 day behind Chinese time.  We use the ``time`` column instead
+    and convert properly to China Standard Time.
+    """
+    return (
+        pd.to_datetime(ms_series, unit="ms", utc=True)
+        .dt.tz_convert("Asia/Shanghai")
+        .dt.strftime("%Y%m%d")
+        .astype(int)
+        .tolist()
+    )
+
+
 def _append_df_columns(code: str, df: pd.DataFrame, cols: dict):
     """Append one stock's DataFrame rows into the columnar response dict.
 
@@ -30,19 +46,10 @@ def _append_df_columns(code: str, df: pd.DataFrame, cols: dict):
     if n == 0:
         return
 
-    # Debug: log index format for the first stock processed
-    if not cols["stock_code"]:
-        logger.info(
-            "DataFrame debug: code=%s, index_type=%s, index[:3]=%s, columns=%s, "
-            "has_time_col=%s",
-            code, type(df.index).__name__, list(df.index[:3]),
-            df.columns.tolist(), "time" in df.columns,
-        )
-        if "time" in df.columns:
-            logger.info("  time column[:3]=%s", df["time"].tolist()[:3])
-
     cols["stock_code"].extend([code] * n)
-    cols["time"].extend(int(t) for t in df.index)
+    # Use the 'time' column (ms timestamps) and convert to CST YYYYMMDD,
+    # NOT df.index which is UTC-based and off by 1 day for Chinese stocks.
+    cols["time"].extend(_ms_to_date_int(df["time"]))
     cols["open"].extend(df["open"].astype(float).tolist())
     cols["high"].extend(df["high"].astype(float).tolist())
     cols["low"].extend(df["low"].astype(float).tolist())
