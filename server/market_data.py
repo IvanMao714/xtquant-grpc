@@ -21,20 +21,25 @@ logger = logging.getLogger(__name__)
 # ====================== Data Conversion Helpers ======================
 
 
+_CST_OFFSET_MS = 8 * 3600 * 1000  # UTC+8 in milliseconds
+_MS_PER_DAY = 86400 * 1000
+
+
 def _ms_to_date_int(ms_series: pd.Series) -> list:
     """Convert millisecond timestamps to YYYYMMDD integers in CST (UTC+8).
 
     xtdata stores time as ms-timestamps; the DataFrame index is the UTC date
     which is 1 day behind Chinese time.  We use the ``time`` column instead
     and convert properly to China Standard Time.
+
+    Uses pure arithmetic (add UTC+8 offset, then epoch-day lookup) instead of
+    pandas tz_convert + strftime for ~10x speed on millions of rows.
     """
-    return (
-        pd.to_datetime(ms_series, unit="ms", utc=True)
-        .dt.tz_convert("Asia/Shanghai")
-        .dt.strftime("%Y%m%d")
-        .astype(int)
-        .tolist()
-    )
+    # Shift to CST, then truncate to day boundary
+    cst_days = (ms_series.values + _CST_OFFSET_MS) // _MS_PER_DAY
+    # Vectorised: epoch days -> datetime64[D] -> YYYYMMDD int
+    dates = pd.to_datetime(cst_days, unit="D")
+    return (dates.year * 10000 + dates.month * 100 + dates.day).tolist()
 
 
 def _append_df_columns(code: str, df: pd.DataFrame, cols: dict):
