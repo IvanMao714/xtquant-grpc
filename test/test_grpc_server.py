@@ -266,6 +266,87 @@ class TestGetFinancialData:
         print(f"\n  Financial tables retrieved: {list(tables.keys())}")
 
 
+class TestDownloadFinancialData:
+    """gRPC DownloadFinancialData streaming endpoint"""
+
+    @pytest.mark.slow
+    def test_download_single_table(self, market_stub):
+        """Download Pershareindex for one stock, verify streaming progress"""
+        progress = list(market_stub.DownloadFinancialData(xtquant_pb2.DownloadFinancialDataRequest(
+            stock_codes=["600000.SH"],
+            table_list=["Pershareindex"],
+        )))
+        assert len(progress) > 0, "No progress received"
+        # First message is the initial "Starting" message
+        assert "Starting" in progress[0].message
+        print(f"\n  Financial download progress: {len(progress)} updates")
+        for p in progress:
+            print(f"    [{p.finished}/{p.total}] {p.stock_code} {p.message}")
+
+    @pytest.mark.slow
+    def test_download_multiple_tables(self, market_stub):
+        """Download multiple tables for multiple stocks"""
+        codes = ["600000.SH", "000001.SZ"]
+        progress = list(market_stub.DownloadFinancialData(xtquant_pb2.DownloadFinancialDataRequest(
+            stock_codes=codes,
+            table_list=["Capital", "Pershareindex", "Balance"],
+        )))
+        assert len(progress) > 0
+        last = progress[-1]
+        print(f"\n  Financial download: {len(progress)} updates, last={last.finished}/{last.total}")
+
+
+class TestGetValuationMetrics:
+    """gRPC GetValuationMetrics endpoint
+
+    Requires financial data (Pershareindex + Capital) to be downloaded first.
+    """
+
+    @pytest.mark.slow
+    def test_single_stock(self, market_stub):
+        """Get valuation metrics for one stock"""
+        # Download required data first
+        from xtquant import xtdata
+        xtdata.download_financial_data(["600000.SH"], table_list=["Pershareindex", "Capital"])
+
+        resp = market_stub.GetValuationMetrics(xtquant_pb2.GetValuationMetricsRequest(
+            stock_codes=["600000.SH"],
+        ))
+        assert len(resp.valuations) == 1
+        v = resp.valuations[0]
+        assert v.stock_code == "600000.SH"
+        # At least EPS and shares should be populated
+        print(f"\n  600000.SH valuation:")
+        print(f"    PE={v.pe_ttm:.2f} (computed: price/EPS)")
+        print(f"    PB={v.pb:.2f} (computed: price/BPS)")
+        print(f"    EPS={v.eps}")
+        print(f"    TotalShares={v.total_shares:,} FloatShares={v.float_shares:,}")
+        print(f"    MarketCap={v.total_market_cap:,.0f} FloatMktCap={v.float_market_cap:,.0f}")
+        print(f"    Turnover={v.turnover_rate:.4f}%")
+
+    @pytest.mark.slow
+    def test_multiple_stocks(self, market_stub):
+        """Get valuation metrics for multiple stocks"""
+        codes = ["600000.SH", "000001.SZ"]
+        from xtquant import xtdata
+        xtdata.download_financial_data(codes, table_list=["Pershareindex", "Capital"])
+
+        resp = market_stub.GetValuationMetrics(xtquant_pb2.GetValuationMetricsRequest(
+            stock_codes=codes,
+        ))
+        assert len(resp.valuations) == len(codes)
+        for v in resp.valuations:
+            assert v.stock_code in codes
+            print(f"\n  {v.stock_code}: PE={v.pe_ttm:.2f} PB={v.pb:.2f} EPS={v.eps:.4f}")
+
+    def test_empty_request(self, market_stub):
+        """Empty request should return empty list"""
+        resp = market_stub.GetValuationMetrics(xtquant_pb2.GetValuationMetricsRequest(
+            stock_codes=[],
+        ))
+        assert len(resp.valuations) == 0
+
+
 class TestSubscribeQuote:
     """gRPC SubscribeQuote streaming endpoint"""
 

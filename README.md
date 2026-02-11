@@ -182,7 +182,9 @@ for event in trading.SubscribeTrading(xtquant_pb2.AccountRequest(
 | `GetSectorList` | Unary | Get sector list | `get_sector_list` |
 | `DownloadHistoryData` | Stream | Download historical data with progress | `download_history_data2` |
 | `GetTradingDates` | Unary | Get trading dates (ms timestamps) | `get_trading_dates` |
-| `GetFinancialData` | Unary | Get financial data | `get_financial_data` |
+| `GetFinancialData` | Unary | Get financial data (JSON) | `get_financial_data` |
+| `DownloadFinancialData` | Stream | Download financial data with progress | `download_financial_data2` |
+| `GetValuationMetrics` | Unary | Get PE/PB/EPS/dividend yield/market cap | `get_financial_data` + `get_full_tick` |
 | `SubscribeQuote` | Stream | Subscribe single-stock quotes | `subscribe_quote` |
 | `SubscribeWholeQuote` | Stream | Subscribe full-market quotes | `subscribe_whole_quote` |
 
@@ -253,9 +255,14 @@ xtquant-grpc/
 │   ├── conftest.py          # Shared test fixtures
 │   ├── test_xtdata_direct.py  # Direct xtdata integration tests
 │   └── test_grpc_server.py  # Full gRPC round-trip tests
+├── scripts/
+│   └── test_financial_data.py  # Financial data field exploration
+├── docs/
+│   └── financial_data.md    # Financial data API reference
 ├── main.py                   # Server entry point
 ├── gen_proto.py              # Protobuf code generation script
 ├── pyproject.toml
+├── CHANGELOG.md
 └── README.md
 ```
 
@@ -277,9 +284,10 @@ protoc --csharp_out=. --grpc_csharp_out=. proto/xtquant.proto
 ## Notes
 
 1. **MiniQMT must be running** — Both xtdata and xttrader depend on the locally running MiniQMT client
-2. **Data must be downloaded first** — Before calling `GetMarketData` for historical data, download it via `DownloadHistoryData`
+2. **Data must be downloaded first** — Before calling `GetMarketData` for historical data, download it via `DownloadHistoryData`. Similarly, call `DownloadFinancialData` before `GetFinancialData` or `GetValuationMetrics`
 3. **Subscription limits** — Single-stock subscriptions should not exceed ~50; use `SubscribeWholeQuote` for many instruments
 4. **Unique session ID** — Concurrent strategies must use different `--session-id` values
+5. **Financial data reference** — See [docs/financial_data.md](docs/financial_data.md) for detailed table schemas and usage examples
 
 ## License
 

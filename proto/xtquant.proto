@@ -139,13 +139,46 @@ message GetTradingDatesResponse {
 
 message GetFinancialDataRequest {
   repeated string stock_codes = 1;
-  repeated string table_list = 2;  // Balance, Income, CashFlow, Capital, etc.
+  repeated string table_list = 2;  // Balance, Income, CashFlow, Capital, Holdernum,
+                                   // Top10holder, Top10flowholder, Pershareindex
   string start_time = 3;
   string end_time = 4;
+  string report_type = 5;          // "report_time" (default) or "announce_time"
 }
 
 message GetFinancialDataResponse {
   string data_json = 1;  // Financial data in JSON format
+}
+
+// Download financial data (batch, with progress)
+message DownloadFinancialDataRequest {
+  repeated string stock_codes = 1;
+  repeated string table_list = 2;  // Same table names as GetFinancialDataRequest
+  string start_time = 3;
+  string end_time = 4;
+}
+// Response: reuses stream DownloadProgress
+
+// ====================== Valuation Metrics ======================
+
+message GetValuationMetricsRequest {
+  repeated string stock_codes = 1;
+}
+
+message StockValuation {
+  string stock_code = 1;
+  double pe_ttm = 2;             // price / Pershareindex.s_fa_eps_basic
+  double pb = 3;                 // price / Pershareindex.s_fa_bps
+  double turnover_rate = 4;      // tick.volume / Capital.circulating_capital * 100
+  double eps = 5;                // Pershareindex.s_fa_eps_basic
+  int64 total_shares = 6;       // Capital.total_capital
+  int64 float_shares = 7;       // Capital.circulating_capital
+  double total_market_cap = 8;  // tick.lastPrice * Capital.total_capital
+  double float_market_cap = 9;  // tick.lastPrice * Capital.circulating_capital
+}
+
+message GetValuationMetricsResponse {
+  repeated StockValuation valuations = 1;
 }
 
 message SubscribeQuoteRequest {
@@ -321,6 +354,12 @@ service MarketDataService {
 
   // Get financial data -> xtdata.get_financial_data
   rpc GetFinancialData(GetFinancialDataRequest) returns (GetFinancialDataResponse);
+
+  // Download financial data (server stream) -> xtdata.download_financial_data2
+  rpc DownloadFinancialData(DownloadFinancialDataRequest) returns (stream DownloadProgress);
+
+  // Get valuation metrics (PE, PB computed from price/EPS/BPS; turnover, market cap, etc.)
+  rpc GetValuationMetrics(GetValuationMetricsRequest) returns (GetValuationMetricsResponse);
 
   // Subscribe to single-stock quotes (server stream) -> xtdata.subscribe_quote
   rpc SubscribeQuote(SubscribeQuoteRequest) returns (stream QuoteUpdate);

@@ -236,12 +236,16 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
 
         Financial data has complex schemas (balance sheet / income / cash flow, etc.),
         serialized as JSON for flexibility.
+
+        Available tables: Balance, Income, CashFlow, Capital, Holdernum,
+        Top10holder, Top10flowholder, Pershareindex.
         """
         data = xtdata.get_financial_data(
             list(request.stock_codes),
             table_list=list(request.table_list) or [],
             start_time=request.start_time,
             end_time=request.end_time,
+            report_type=request.report_type or "report_time",
         )
         result = {}
         for code, tables in data.items():
@@ -251,6 +255,156 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
         return xtquant_pb2.GetFinancialDataResponse(
             data_json=json.dumps(result, ensure_ascii=False, default=str),
         )
+
+    def DownloadFinancialData(self, request, context):
+        """Download financial data (server stream) -> xtdata.download_financial_data2
+
+        Same streaming pattern as DownloadHistoryData: background thread + queue.
+        Reuses DownloadProgress message for progress updates.
+        """
+        progress_queue: queue.Queue = queue.Queue()
+
+        def on_progress(data):
+            progress_queue.put(data)
+
+        codes = list(request.stock_codes)
+        tables = list(request.table_list) or []
+        total = len(codes)
+
+        logger.info(
+            "DownloadFinancialData request: %d stocks, tables=%s, range=[%s, %s]",
+            total, tables, request.start_time, request.end_time,
+        )
+
+        download_done = threading.Event()
+        download_error = [None]
+
+        def do_download():
+            try:
+                logger.info("Financial download thread started ...")
+                xtdata.download_financial_data2(
+                    codes,
+                    table_list=tables,
+                    start_time=request.start_time,
+                    end_time=request.end_time,
+                    callback=on_progress,
+                )
+                logger.info("Financial download thread finished successfully")
+            except Exception as e:
+                logger.error("Financial download thread error: %s", e)
+                download_error[0] = e
+            finally:
+                download_done.set()
+
+        threading.Thread(target=do_download, daemon=True).start()
+
+        yield xtquant_pb2.DownloadProgress(
+            total=total, finished=0, stock_code="",
+            message=f"Starting financial download: {total} stocks, tables={tables}",
+        )
+
+        finished_count = 0
+        while not download_done.is_set() or not progress_queue.empty():
+            try:
+                data = progress_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            finished_count = data.get("finished", finished_count)
+            stock_code = data.get("stockcode", "")
+            logger.info("Financial download progress: [%d/%d] %s", finished_count, total, stock_code)
+            yield xtquant_pb2.DownloadProgress(
+                total=data.get("total", total),
+                finished=finished_count,
+                stock_code=stock_code,
+                message=data.get("message", ""),
+            )
+
+        if download_error[0]:
+            msg = f"Financial download failed: {download_error[0]}"
+            logger.error(msg)
+            yield xtquant_pb2.DownloadProgress(
+                total=total, finished=finished_count, stock_code="", message=msg,
+            )
+        elif finished_count == 0 and total == 0:
+            yield xtquant_pb2.DownloadProgress(
+                total=0, finished=0, stock_code="", message="No stocks to download",
+            )
+        else:
+            logger.info("Financial download complete: %d/%d stocks", finished_count, total)
+
+    def GetValuationMetrics(self, request, context):
+        """Get valuation metrics for a list of stocks.
+
+        Combines data from multiple sources:
+        - Pershareindex table: EPS (s_fa_eps_basic), BPS (s_fa_bps), ROE (net_roe), etc.
+        - Capital table: total_capital, circulating_capital, freeFloatCapital
+        - get_full_tick: latest price for PE, PB, market cap, turnover rate computation
+
+        PE and PB are NOT stored in xtdata financial tables — they are computed
+        from latest price / EPS and latest price / BPS respectively.
+        """
+        codes = list(request.stock_codes)
+        if not codes:
+            return xtquant_pb2.GetValuationMetricsResponse(valuations=[])
+
+        # Fetch Pershareindex + Capital tables for latest metrics
+        fin_data = xtdata.get_financial_data(codes, table_list=["Pershareindex", "Capital"])
+
+        # Fetch latest tick for price-based calculations
+        tick_data = xtdata.get_full_tick(codes)
+
+        valuations = []
+        for code in codes:
+            v = xtquant_pb2.StockValuation(stock_code=code)
+            price = 0.0
+
+            # Latest price from tick data
+            if code in tick_data:
+                price = float(tick_data[code].get("lastPrice", 0) or 0)
+
+            # Extract per-share index (latest record)
+            eps = 0.0
+            bps = 0.0
+            if code in fin_data:
+                psi = fin_data[code].get("Pershareindex")
+                if psi is not None and hasattr(psi, "iloc") and len(psi) > 0:
+                    row = psi.iloc[-1]
+                    eps = float(row.get("s_fa_eps_basic", 0) or 0)
+                    bps = float(row.get("s_fa_bps", 0) or 0)
+                    v.eps = eps
+
+                # Capital table: share counts
+                cap = fin_data[code].get("Capital")
+                if cap is not None and hasattr(cap, "iloc") and len(cap) > 0:
+                    row = cap.iloc[-1]
+                    v.total_shares = int(row.get("total_capital", 0) or 0)
+                    v.float_shares = int(row.get("circulating_capital", 0) or 0)
+
+            # Compute PE = price / EPS (avoid division by zero)
+            if price > 0 and eps != 0:
+                v.pe_ttm = price / eps
+
+            # Compute PB = price / BPS
+            if price > 0 and bps > 0:
+                v.pb = price / bps
+
+            # Market cap = price * shares
+            if price > 0:
+                if v.total_shares > 0:
+                    v.total_market_cap = price * v.total_shares
+                if v.float_shares > 0:
+                    v.float_market_cap = price * v.float_shares
+
+            # Turnover rate = volume / float_shares * 100 (%)
+            if code in tick_data:
+                volume = float(tick_data[code].get("volume", 0) or 0)
+                if v.float_shares > 0 and volume > 0:
+                    v.turnover_rate = volume / v.float_shares * 100
+
+            valuations.append(v)
+
+        return xtquant_pb2.GetValuationMetricsResponse(valuations=valuations)
 
     def SubscribeQuote(self, request, context):
         """Subscribe to single-stock quotes (server stream) -> xtdata.subscribe_quote
