@@ -9,10 +9,11 @@ wheels/
 # Virtual environments
 .venv
 
-# Generated protobuf code
-pb/xtquant_pb2.py
-pb/xtquant_pb2_grpc.py
-pb/xtquant_pb2.pyi
+scripts/
+# # Generated protobuf code
+# pb/xtquant_pb2.py
+# pb/xtquant_pb2_grpc.py
+# pb/xtquant_pb2.pyi
 
 # IDE
 .idea/
