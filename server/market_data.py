@@ -141,113 +141,84 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
     def DownloadHistoryData(self, request, context):
         """Download historical data (server stream) -> xtdata.download_history_data2
 
-        Downloads stocks in sequential batches with progress reporting.
-        Each batch runs in a background thread so we can stream progress via gRPC.
-        xtdata does NOT support concurrent download_history_data2 calls.
+        Uses the batch download API with a progress callback.
+        Yields a DownloadProgress message each time an instrument completes.
         """
+        progress_queue: queue.Queue = queue.Queue()
+
+        def on_progress(data):
+            # data = {'finished': 1, 'total': 50, 'stockcode': '000001.SZ', 'message': ''}
+            progress_queue.put(data)
+
         codes = list(request.stock_codes)
         period = request.period or "1d"
-        total_stocks = len(codes)
-        incrementally = True if request.incrementally else None
 
         logger.info(
-            "DownloadHistoryData request: %d stocks, period=%s, range=[%s, %s], incrementally=%s",
-            total_stocks, period, request.start_time, request.end_time, incrementally,
+            "DownloadHistoryData request: %d stocks, period=%s, range=[%s, %s]",
+            len(codes), period, request.start_time, request.end_time,
         )
 
-        if total_stocks == 0:
-            yield xtquant_pb2.DownloadProgress(
-                total=0, finished=0, stock_code="", message="No instruments to download",
-            )
-            return
+        # download_history_data2 is synchronous and blocks until all done,
+        # so run it in a background thread to allow streaming progress
+        download_done = threading.Event()
+        download_error = [None]  # mutable container for thread exception
 
-        batch_size = min(500, total_stocks)
-        batches = [codes[i:i + batch_size] for i in range(0, total_stocks, batch_size)]
-        num_batches = len(batches)
+        def do_download():
+            try:
+                logger.info("Download thread started, calling download_history_data2 ...")
+                xtdata.download_history_data2(
+                    codes,
+                    period=period,
+                    start_time=request.start_time,
+                    end_time=request.end_time,
+                    callback=on_progress,
+                )
+                logger.info("Download thread finished successfully")
+            except Exception as e:
+                logger.error("Download thread error: %s", e)
+                download_error[0] = e
+            finally:
+                download_done.set()
 
-        logger.info(
-            "Downloading %d stocks in %d sequential batches (%d stocks/batch)",
-            total_stocks, num_batches, batch_size,
-        )
+        threading.Thread(target=do_download, daemon=True).start()
 
+        # Yield an initial message so the client knows the download has started
+        # Use 0 for total until xtdata reports the actual count via callback
         yield xtquant_pb2.DownloadProgress(
-            total=total_stocks, finished=0, stock_code="",
-            message=f"Starting download: {total_stocks} instruments in {num_batches} batches",
+            total=0, finished=0, stock_code="", message=f"Starting download: {len(codes)} instruments",
         )
 
         finished_count = 0
-        for batch_idx, batch_codes in enumerate(batches):
-            progress_queue: queue.Queue = queue.Queue()
-            download_done = threading.Event()
-            batch_error = [None]
+        actual_total = len(codes)
+        while not download_done.is_set() or not progress_queue.empty():
+            try:
+                data = progress_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
 
-            def do_download(b_codes=batch_codes):
-                try:
-                    xtdata.download_history_data2(
-                        b_codes,
-                        period=period,
-                        start_time=request.start_time,
-                        end_time=request.end_time,
-                        callback=lambda data: progress_queue.put(data),
-                        incrementally=incrementally,
-                    )
-                except Exception as e:
-                    batch_error[0] = e
-                finally:
-                    download_done.set()
-
-            logger.info("Batch %d/%d started: %d stocks", batch_idx + 1, num_batches, len(batch_codes))
-            threading.Thread(target=do_download, daemon=True).start()
-
-            wait_ticks = 0
-            while not download_done.is_set() or not progress_queue.empty():
-                try:
-                    data = progress_queue.get(timeout=0.5)
-                except queue.Empty:
-                    wait_ticks += 1
-                    if wait_ticks % 20 == 0:
-                        logger.info(
-                            "Batch %d/%d in progress... (%.0fs, finished: %d/%d)",
-                            batch_idx + 1, num_batches, wait_ticks * 0.5,
-                            finished_count, total_stocks,
-                        )
-                    continue
-
-                wait_ticks = 0
-                finished_count += 1
-                stock_code = data.get("stockcode", "")
-                if finished_count % 100 == 0 or finished_count <= 3 or finished_count == total_stocks:
-                    logger.info("Download progress: [%d/%d] %s", finished_count, total_stocks, stock_code)
-                yield xtquant_pb2.DownloadProgress(
-                    total=total_stocks,
-                    finished=finished_count,
-                    stock_code=stock_code,
-                    message=data.get("message", ""),
-                )
-
-            if batch_error[0]:
-                msg = f"Batch {batch_idx + 1}/{num_batches} failed: {batch_error[0]}"
-                logger.error(msg)
-                yield xtquant_pb2.DownloadProgress(
-                    total=total_stocks, finished=finished_count, stock_code="", message=msg,
-                )
-                return
-
-            batch_finished = (batch_idx + 1) * batch_size
-            effective = max(finished_count, min(batch_finished, total_stocks))
-            logger.info(
-                "Batch %d/%d completed (effective progress: %d/%d)",
-                batch_idx + 1, num_batches, effective, total_stocks,
-            )
+            finished_count += 1
+            actual_total = data.get("total", actual_total)
+            stock_code = data.get("stockcode", "")
+            logger.info("Download progress: [%d/%d] %s", finished_count, actual_total, stock_code)
             yield xtquant_pb2.DownloadProgress(
-                total=total_stocks,
-                finished=effective,
-                stock_code="",
-                message=f"Batch {batch_idx + 1}/{num_batches} completed",
+                total=actual_total,
+                finished=finished_count,
+                stock_code=stock_code,
+                message=data.get("message", ""),
             )
-            finished_count = effective
 
-        logger.info("Download complete: %d/%d instruments", finished_count, total_stocks)
+        if download_error[0]:
+            msg = f"Download failed: {download_error[0]}"
+            logger.error(msg)
+            yield xtquant_pb2.DownloadProgress(
+                total=actual_total, finished=finished_count, stock_code="", message=msg,
+            )
+        elif finished_count == 0 and len(codes) == 0:
+            yield xtquant_pb2.DownloadProgress(
+                total=0, finished=0, stock_code="", message="No instruments to download",
+            )
+        else:
+            logger.info("Download complete: %d/%d instruments", finished_count, actual_total)
 
     def GetTradingDates(self, request, context):
         """Get trading dates -> xtdata.get_trading_dates"""
@@ -288,109 +259,81 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
     def DownloadFinancialData(self, request, context):
         """Download financial data (server stream) -> xtdata.download_financial_data2
 
-        Same sequential-batch pattern as DownloadHistoryData.
+        Same streaming pattern as DownloadHistoryData: background thread + queue.
+        Reuses DownloadProgress message for progress updates.
         """
+        progress_queue: queue.Queue = queue.Queue()
+
+        def on_progress(data):
+            progress_queue.put(data)
+
         codes = list(request.stock_codes)
         tables = list(request.table_list) or []
-        total_stocks = len(codes)
 
         logger.info(
             "DownloadFinancialData request: %d stocks, tables=%s, range=[%s, %s]",
-            total_stocks, tables, request.start_time, request.end_time,
+            len(codes), tables, request.start_time, request.end_time,
         )
 
-        if total_stocks == 0:
-            yield xtquant_pb2.DownloadProgress(
-                total=0, finished=0, stock_code="", message="No stocks to download",
-            )
-            return
+        download_done = threading.Event()
+        download_error = [None]
 
-        batch_size = min(500, total_stocks)
-        batches = [codes[i:i + batch_size] for i in range(0, total_stocks, batch_size)]
-        num_batches = len(batches)
+        def do_download():
+            try:
+                logger.info("Financial download thread started ...")
+                xtdata.download_financial_data2(
+                    codes,
+                    table_list=tables,
+                    start_time=request.start_time,
+                    end_time=request.end_time,
+                    callback=on_progress,
+                )
+                logger.info("Financial download thread finished successfully")
+            except Exception as e:
+                logger.error("Financial download thread error: %s", e)
+                download_error[0] = e
+            finally:
+                download_done.set()
 
-        logger.info(
-            "Downloading financial data for %d stocks in %d sequential batches",
-            total_stocks, num_batches,
-        )
+        threading.Thread(target=do_download, daemon=True).start()
 
+        # total from xtdata callback = stocks × tables; use 0 until first callback arrives
         yield xtquant_pb2.DownloadProgress(
-            total=total_stocks, finished=0, stock_code="",
-            message=f"Starting financial download: {total_stocks} stocks, tables={tables}, {num_batches} batches",
+            total=0, finished=0, stock_code="",
+            message=f"Starting financial download: {len(codes)} stocks, tables={tables}",
         )
 
         finished_count = 0
-        for batch_idx, batch_codes in enumerate(batches):
-            progress_queue: queue.Queue = queue.Queue()
-            download_done = threading.Event()
-            batch_error = [None]
+        actual_total = len(codes) * max(len(tables), 1)
+        while not download_done.is_set() or not progress_queue.empty():
+            try:
+                data = progress_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
 
-            def do_download(b_codes=batch_codes):
-                try:
-                    xtdata.download_financial_data2(
-                        b_codes,
-                        table_list=tables,
-                        start_time=request.start_time,
-                        end_time=request.end_time,
-                        callback=lambda data: progress_queue.put(data),
-                    )
-                except Exception as e:
-                    batch_error[0] = e
-                finally:
-                    download_done.set()
-
-            logger.info("Financial batch %d/%d started: %d stocks", batch_idx + 1, num_batches, len(batch_codes))
-            threading.Thread(target=do_download, daemon=True).start()
-
-            wait_ticks = 0
-            while not download_done.is_set() or not progress_queue.empty():
-                try:
-                    data = progress_queue.get(timeout=0.5)
-                except queue.Empty:
-                    wait_ticks += 1
-                    if wait_ticks % 20 == 0:
-                        logger.info(
-                            "Financial batch %d/%d in progress... (%.0fs, finished: %d/%d)",
-                            batch_idx + 1, num_batches, wait_ticks * 0.5,
-                            finished_count, total_stocks,
-                        )
-                    continue
-
-                wait_ticks = 0
-                finished_count += 1
-                stock_code = data.get("stockcode", "")
-                if finished_count % 100 == 0 or finished_count <= 3 or finished_count == total_stocks:
-                    logger.info("Financial progress: [%d/%d] %s", finished_count, total_stocks, stock_code)
-                yield xtquant_pb2.DownloadProgress(
-                    total=total_stocks,
-                    finished=finished_count,
-                    stock_code=stock_code,
-                    message=data.get("message", ""),
-                )
-
-            if batch_error[0]:
-                msg = f"Financial batch {batch_idx + 1}/{num_batches} failed: {batch_error[0]}"
-                logger.error(msg)
-                yield xtquant_pb2.DownloadProgress(
-                    total=total_stocks, finished=finished_count, stock_code="", message=msg,
-                )
-                return
-
-            batch_finished = (batch_idx + 1) * batch_size
-            effective = max(finished_count, min(batch_finished, total_stocks))
-            logger.info(
-                "Financial batch %d/%d completed (progress: %d/%d)",
-                batch_idx + 1, num_batches, effective, total_stocks,
-            )
+            finished_count += 1
+            actual_total = data.get("total", actual_total)
+            stock_code = data.get("stockcode", "")
+            logger.info("Financial download progress: [%d/%d] %s", finished_count, actual_total, stock_code)
             yield xtquant_pb2.DownloadProgress(
-                total=total_stocks,
-                finished=effective,
-                stock_code="",
-                message=f"Financial batch {batch_idx + 1}/{num_batches} completed",
+                total=actual_total,
+                finished=finished_count,
+                stock_code=stock_code,
+                message=data.get("message", ""),
             )
-            finished_count = effective
 
-        logger.info("Financial download complete: %d/%d stocks", finished_count, total_stocks)
+        if download_error[0]:
+            msg = f"Financial download failed: {download_error[0]}"
+            logger.error(msg)
+            yield xtquant_pb2.DownloadProgress(
+                total=actual_total, finished=finished_count, stock_code="", message=msg,
+            )
+        elif finished_count == 0 and len(codes) == 0:
+            yield xtquant_pb2.DownloadProgress(
+                total=0, finished=0, stock_code="", message="No stocks to download",
+            )
+        else:
+            logger.info("Financial download complete: %d/%d stocks", finished_count, actual_total)
 
     def GetValuationMetrics(self, request, context):
         """Get valuation metrics for a list of stocks.
