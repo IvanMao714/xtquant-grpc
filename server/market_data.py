@@ -151,12 +151,11 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
             progress_queue.put(data)
 
         codes = list(request.stock_codes)
-        total = len(codes)
         period = request.period or "1d"
 
         logger.info(
             "DownloadHistoryData request: %d stocks, period=%s, range=[%s, %s]",
-            total, period, request.start_time, request.end_time,
+            len(codes), period, request.start_time, request.end_time,
         )
 
         # download_history_data2 is synchronous and blocks until all done,
@@ -184,41 +183,42 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
         threading.Thread(target=do_download, daemon=True).start()
 
         # Yield an initial message so the client knows the download has started
+        # Use 0 for total until xtdata reports the actual count via callback
         yield xtquant_pb2.DownloadProgress(
-            total=total, finished=0, stock_code="", message=f"Starting download: {total} instruments",
+            total=0, finished=0, stock_code="", message=f"Starting download: {len(codes)} instruments",
         )
 
         finished_count = 0
+        actual_total = len(codes)
         while not download_done.is_set() or not progress_queue.empty():
             try:
                 data = progress_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
 
-            finished_count = data.get("finished", finished_count)
+            finished_count += 1
+            actual_total = data.get("total", actual_total)
             stock_code = data.get("stockcode", "")
-            logger.info("Download progress: [%d/%d] %s", finished_count, total, stock_code)
+            logger.info("Download progress: [%d/%d] %s", finished_count, actual_total, stock_code)
             yield xtquant_pb2.DownloadProgress(
-                total=data.get("total", total),
+                total=actual_total,
                 finished=finished_count,
                 stock_code=stock_code,
                 message=data.get("message", ""),
             )
 
-        # Report error if download thread failed
         if download_error[0]:
             msg = f"Download failed: {download_error[0]}"
             logger.error(msg)
             yield xtquant_pb2.DownloadProgress(
-                total=total, finished=finished_count, stock_code="", message=msg,
+                total=actual_total, finished=finished_count, stock_code="", message=msg,
             )
-        elif finished_count == 0 and total == 0:
-            # Final message if nothing was yielded (e.g. empty list)
+        elif finished_count == 0 and len(codes) == 0:
             yield xtquant_pb2.DownloadProgress(
                 total=0, finished=0, stock_code="", message="No instruments to download",
             )
         else:
-            logger.info("Download complete: %d/%d instruments", finished_count, total)
+            logger.info("Download complete: %d/%d instruments", finished_count, actual_total)
 
     def GetTradingDates(self, request, context):
         """Get trading dates -> xtdata.get_trading_dates"""
@@ -269,11 +269,10 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
 
         codes = list(request.stock_codes)
         tables = list(request.table_list) or []
-        total = len(codes)
 
         logger.info(
             "DownloadFinancialData request: %d stocks, tables=%s, range=[%s, %s]",
-            total, tables, request.start_time, request.end_time,
+            len(codes), tables, request.start_time, request.end_time,
         )
 
         download_done = threading.Event()
@@ -298,23 +297,26 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
 
         threading.Thread(target=do_download, daemon=True).start()
 
+        # total from xtdata callback = stocks × tables; use 0 until first callback arrives
         yield xtquant_pb2.DownloadProgress(
-            total=total, finished=0, stock_code="",
-            message=f"Starting financial download: {total} stocks, tables={tables}",
+            total=0, finished=0, stock_code="",
+            message=f"Starting financial download: {len(codes)} stocks, tables={tables}",
         )
 
         finished_count = 0
+        actual_total = len(codes) * max(len(tables), 1)
         while not download_done.is_set() or not progress_queue.empty():
             try:
                 data = progress_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
 
-            finished_count = data.get("finished", finished_count)
+            finished_count += 1
+            actual_total = data.get("total", actual_total)
             stock_code = data.get("stockcode", "")
-            logger.info("Financial download progress: [%d/%d] %s", finished_count, total, stock_code)
+            logger.info("Financial download progress: [%d/%d] %s", finished_count, actual_total, stock_code)
             yield xtquant_pb2.DownloadProgress(
-                total=data.get("total", total),
+                total=actual_total,
                 finished=finished_count,
                 stock_code=stock_code,
                 message=data.get("message", ""),
@@ -324,14 +326,14 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
             msg = f"Financial download failed: {download_error[0]}"
             logger.error(msg)
             yield xtquant_pb2.DownloadProgress(
-                total=total, finished=finished_count, stock_code="", message=msg,
+                total=actual_total, finished=finished_count, stock_code="", message=msg,
             )
-        elif finished_count == 0 and total == 0:
+        elif finished_count == 0 and len(codes) == 0:
             yield xtquant_pb2.DownloadProgress(
                 total=0, finished=0, stock_code="", message="No stocks to download",
             )
         else:
-            logger.info("Financial download complete: %d/%d stocks", finished_count, total)
+            logger.info("Financial download complete: %d/%d stocks", finished_count, actual_total)
 
     def GetValuationMetrics(self, request, context):
         """Get valuation metrics for a list of stocks.

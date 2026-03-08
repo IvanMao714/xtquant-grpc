@@ -14,18 +14,19 @@ This project exposes xtquant as a network service via gRPC:
 
 ## Requirements
 
-| Item | Requirement |
-|------|-------------|
-| OS | Windows (MiniQMT is Windows-only) |
-| Python | 3.11+ |
-| MiniQMT | Installed and running |
-| xtquant | Bundled with MiniQMT; ensure `import xtquant` works in Python |
+
+| Item    | Requirement                                                  |
+| ------- | ------------------------------------------------------------ |
+| OS      | Windows (MiniQMT is Windows-only)                            |
+| Python  | 3.11+                                                        |
+| MiniQMT | Installed and running                                        |
+| xtquant | Bundled with MiniQMT; ensure`import xtquant` works in Python |
 
 ## Installation
 
 ```bash
 # Clone the project
-git clone <repo-url>
+git clone https://github.com/IvanMao714/xtquant-grpc
 cd xtquant-grpc
 
 # Install dependencies
@@ -49,11 +50,12 @@ python main.py --port 50051 \
 
 ### Parameters
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `--port` | gRPC listen port | `50051` |
-| `--mini-qmt-path` | MiniQMT `userdata_mini` path (enables trading service) | empty (disabled) |
-| `--session-id` | Trading session ID; must be unique across concurrent strategies | current timestamp |
+
+| Parameter         | Description                                                     | Default           |
+| ----------------- | --------------------------------------------------------------- | ----------------- |
+| `--port`          | gRPC listen port                                                | `50051`           |
+| `--mini-qmt-path` | MiniQMT`userdata_mini` path (enables trading service)           | empty (disabled)  |
+| `--session-id`    | Trading session ID; must be unique across concurrent strategies | current timestamp |
 
 ## Client Usage Examples
 
@@ -173,32 +175,34 @@ for event in trading.SubscribeTrading(xtquant_pb2.AccountRequest(
 
 ### MarketDataService (Market Data)
 
-| Method | Type | Description | xtdata Mapping |
-|--------|------|-------------|----------------|
-| `GetMarketData` | Unary | Get kline data | `get_market_data_ex` |
-| `GetFullTick` | Unary | Get tick snapshot | `get_full_tick` |
-| `GetInstrumentDetail` | Unary | Get instrument info | `get_instrument_detail` |
-| `GetStockList` | Unary | Get sector constituents | `get_stock_list_in_sector` |
-| `GetSectorList` | Unary | Get sector list | `get_sector_list` |
-| `DownloadHistoryData` | Stream | Download historical data with progress | `download_history_data2` |
-| `GetTradingDates` | Unary | Get trading dates (ms timestamps) | `get_trading_dates` |
-| `GetFinancialData` | Unary | Get financial data (JSON) | `get_financial_data` |
-| `DownloadFinancialData` | Stream | Download financial data with progress | `download_financial_data2` |
-| `GetValuationMetrics` | Unary | Get PE/PB/EPS/dividend yield/market cap | `get_financial_data` + `get_full_tick` |
-| `SubscribeQuote` | Stream | Subscribe single-stock quotes | `subscribe_quote` |
-| `SubscribeWholeQuote` | Stream | Subscribe full-market quotes | `subscribe_whole_quote` |
+
+| Method                  | Type   | Description                             | xtdata Mapping                         |
+| ----------------------- | ------ | --------------------------------------- | -------------------------------------- |
+| `GetMarketData`         | Unary  | Get kline data                          | `get_market_data_ex`                   |
+| `GetFullTick`           | Unary  | Get tick snapshot                       | `get_full_tick`                        |
+| `GetInstrumentDetail`   | Unary  | Get instrument info                     | `get_instrument_detail`                |
+| `GetStockList`          | Unary  | Get sector constituents                 | `get_stock_list_in_sector`             |
+| `GetSectorList`         | Unary  | Get sector list                         | `get_sector_list`                      |
+| `DownloadHistoryData`   | Stream | Download historical data with progress  | `download_history_data2`               |
+| `GetTradingDates`       | Unary  | Get trading dates (ms timestamps)       | `get_trading_dates`                    |
+| `GetFinancialData`      | Unary  | Get financial data (JSON)               | `get_financial_data`                   |
+| `DownloadFinancialData` | Stream | Download financial data with progress   | `download_financial_data2`             |
+| `GetValuationMetrics`   | Unary  | Get PE/PB/EPS/dividend yield/market cap | `get_financial_data` + `get_full_tick` |
+| `SubscribeQuote`        | Stream | Subscribe single-stock quotes           | `subscribe_quote`                      |
+| `SubscribeWholeQuote`   | Stream | Subscribe full-market quotes            | `subscribe_whole_quote`                |
 
 ### TradingService (Trading)
 
-| Method | Type | Description | xttrader Mapping |
-|--------|------|-------------|-----------------|
-| `OrderStock` | Unary | Place order | `order_stock` |
-| `CancelOrder` | Unary | Cancel order | `cancel_order_stock` |
-| `QueryAsset` | Unary | Query account asset | `query_stock_asset` |
-| `QueryOrders` | Unary | Query orders | `query_stock_orders` |
-| `QueryTrades` | Unary | Query trades | `query_stock_trades` |
-| `QueryPositions` | Unary | Query positions | `query_stock_positions` |
-| `SubscribeTrading` | Stream | Trading event push | `subscribe` + callbacks |
+
+| Method             | Type   | Description         | xttrader Mapping        |
+| ------------------ | ------ | ------------------- | ----------------------- |
+| `OrderStock`       | Unary  | Place order         | `order_stock`           |
+| `CancelOrder`      | Unary  | Cancel order        | `cancel_order_stock`    |
+| `QueryAsset`       | Unary  | Query account asset | `query_stock_asset`     |
+| `QueryOrders`      | Unary  | Query orders        | `query_stock_orders`    |
+| `QueryTrades`      | Unary  | Query trades        | `query_stock_trades`    |
+| `QueryPositions`   | Unary  | Query positions     | `query_stock_positions` |
+| `SubscribeTrading` | Stream | Trading event push  | `subscribe` + callbacks |
 
 ## Common Constants Reference
 
@@ -206,37 +210,40 @@ gRPC clients need to pass integer constant values defined in xtconstant when pla
 
 ### Order Type (order_type)
 
-| Name | Value | Description |
-|------|-------|-------------|
-| `STOCK_BUY` | 23 | Stock buy |
-| `STOCK_SELL` | 24 | Stock sell |
-| `CREDIT_BUY` | 25 | Margin collateral buy |
-| `CREDIT_SELL` | 26 | Margin collateral sell |
-| `CREDIT_FIN_BUY` | 27 | Margin financing buy |
-| `CREDIT_SLO_SELL` | 28 | Securities lending sell |
+
+| Name              | Value | Description             |
+| ----------------- | ----- | ----------------------- |
+| `STOCK_BUY`       | 23    | Stock buy               |
+| `STOCK_SELL`      | 24    | Stock sell              |
+| `CREDIT_BUY`      | 25    | Margin collateral buy   |
+| `CREDIT_SELL`     | 26    | Margin collateral sell  |
+| `CREDIT_FIN_BUY`  | 27    | Margin financing buy    |
+| `CREDIT_SLO_SELL` | 28    | Securities lending sell |
 
 ### Price Type (price_type)
 
-| Name | Value | Description |
-|------|-------|-------------|
-| `LATEST_PRICE` | 5 | Latest price |
-| `FIX_PRICE` | 11 | Limit price |
+
+| Name           | Value | Description  |
+| -------------- | ----- | ------------ |
+| `LATEST_PRICE` | 5     | Latest price |
+| `FIX_PRICE`    | 11    | Limit price  |
 
 ### Order Status (order_status)
 
-| Name | Value | Description |
-|------|-------|-------------|
-| `ORDER_UNREPORTED` | 48 | Unreported |
-| `ORDER_WAIT_REPORTING` | 49 | Pending report |
-| `ORDER_REPORTED` | 50 | Reported |
-| `ORDER_REPORTED_CANCEL` | 51 | Reported, pending cancel |
-| `ORDER_PARTSUCC_CANCEL` | 52 | Partially filled, pending cancel |
-| `ORDER_PART_CANCEL` | 53 | Partially cancelled |
-| `ORDER_CANCELED` | 54 | Cancelled |
-| `ORDER_PART_SUCC` | 55 | Partially filled |
-| `ORDER_SUCCEEDED` | 56 | Fully filled |
-| `ORDER_JUNK` | 57 | Rejected |
-| `ORDER_UNKNOWN` | 255 | Unknown |
+
+| Name                    | Value | Description                      |
+| ----------------------- | ----- | -------------------------------- |
+| `ORDER_UNREPORTED`      | 48    | Unreported                       |
+| `ORDER_WAIT_REPORTING`  | 49    | Pending report                   |
+| `ORDER_REPORTED`        | 50    | Reported                         |
+| `ORDER_REPORTED_CANCEL` | 51    | Reported, pending cancel         |
+| `ORDER_PARTSUCC_CANCEL` | 52    | Partially filled, pending cancel |
+| `ORDER_PART_CANCEL`     | 53    | Partially cancelled              |
+| `ORDER_CANCELED`        | 54    | Cancelled                        |
+| `ORDER_PART_SUCC`       | 55    | Partially filled                 |
+| `ORDER_SUCCEEDED`       | 56    | Fully filled                     |
+| `ORDER_JUNK`            | 57    | Rejected                         |
+| `ORDER_UNKNOWN`         | 255   | Unknown                          |
 
 > Full constants list available via `from xtquant import xtconstant` in Python.
 

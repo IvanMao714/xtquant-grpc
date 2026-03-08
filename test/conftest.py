@@ -19,9 +19,13 @@ from server.market_data import MarketDataServicer
 TEST_PORT = 50199
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session")
 def ensure_xtdata_connected():
-    """Verify xtdata is connected to MiniQMT — prerequisite for all tests."""
+    """Verify xtdata is connected to MiniQMT — prerequisite for market data tests.
+
+    Not autouse: only triggered by fixtures/tests that depend on it.
+    Trading tests use mocked xttrader and do not need this.
+    """
     # get_instrument_detail is the lightest API; use it to verify connectivity
     detail = xtdata.get_instrument_detail("000001.SZ")
     assert detail is not None, (
@@ -31,7 +35,7 @@ def ensure_xtdata_connected():
 
 
 @pytest.fixture(scope="session")
-def grpc_server():
+def grpc_server(ensure_xtdata_connected):
     """Start a real gRPC market-data service, shared across the test session."""
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
     xtquant_pb2_grpc.add_MarketDataServiceServicer_to_server(MarketDataServicer(), server)
