@@ -216,7 +216,7 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
                 wait_ticks = 0
                 finished_count += 1
                 stock_code = data.get("stockcode", "")
-                if finished_count % 500 == 0 or finished_count <= 3 or finished_count == total_stocks:
+                if finished_count % 100 == 0 or finished_count <= 3 or finished_count == total_stocks:
                     logger.info("Download progress: [%d/%d] %s", finished_count, total_stocks, stock_code)
                 yield xtquant_pb2.DownloadProgress(
                     total=total_stocks,
@@ -359,7 +359,7 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
                 wait_ticks = 0
                 finished_count += 1
                 stock_code = data.get("stockcode", "")
-                if finished_count % 500 == 0 or finished_count <= 3 or finished_count == total_stocks:
+                if finished_count % 100 == 0 or finished_count <= 3 or finished_count == total_stocks:
                     logger.info("Financial progress: [%d/%d] %s", finished_count, total_stocks, stock_code)
                 yield xtquant_pb2.DownloadProgress(
                     total=total_stocks,
