@@ -8,6 +8,8 @@ import json
 import queue
 import logging
 import threading
+import functools
+import time
 
 import grpc
 import pandas as pd
@@ -16,6 +18,45 @@ from xtquant import xtdata
 from pb import xtquant_pb2, xtquant_pb2_grpc
 
 logger = logging.getLogger(__name__)
+
+
+def _xtdata_retry(max_retries=2, retry_delay=3):
+    """Decorator that catches xtdata connection errors and retries.
+
+    On RuntimeError with 'isNetError', attempts reconnection before retry.
+    After exhausting retries, aborts the gRPC call with UNAVAILABLE.
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(self, request, context, *args, **kwargs):
+            last_err = None
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(self, request, context, *args, **kwargs)
+                except RuntimeError as e:
+                    err_str = str(e)
+                    if "isNetError" not in err_str and "forcibly closed" not in err_str:
+                        raise
+                    last_err = e
+                    if attempt < max_retries:
+                        logger.warning(
+                            "xtdata connection lost (attempt %d/%d), reconnecting in %ds... error: %s",
+                            attempt + 1, max_retries, retry_delay, err_str,
+                        )
+                        try:
+                            xtdata.reconnect()
+                            time.sleep(retry_delay)
+                            logger.info("xtdata reconnected, retrying request...")
+                        except Exception as re_err:
+                            logger.error("xtdata reconnect failed: %s", re_err)
+                            time.sleep(retry_delay)
+            logger.error("xtdata connection failed after %d retries: %s", max_retries, last_err)
+            context.abort(
+                grpc.StatusCode.UNAVAILABLE,
+                f"xtdata connection lost: {last_err}",
+            )
+        return wrapper
+    return decorator
 
 
 # ====================== Data Conversion Helpers ======================
@@ -76,6 +117,7 @@ def _tick_to_snapshot(code: str, tick: dict) -> xtquant_pb2.TickSnapshot:
 class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
     """Market data gRPC service, maps 1-to-1 to xtdata module functions."""
 
+    @_xtdata_retry()
     def GetMarketData(self, request, context):
         """Get kline data -> xtdata.get_market_data_ex"""
         # proto3 int32 defaults to 0; treat 0 as "fetch all"
@@ -99,12 +141,14 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
             _append_df_columns(code, df, cols)
         return xtquant_pb2.GetMarketDataResponse(**cols)
 
+    @_xtdata_retry()
     def GetFullTick(self, request, context):
         """Get real-time tick snapshot -> xtdata.get_full_tick"""
         data = xtdata.get_full_tick(list(request.stock_codes))
         ticks = {code: _tick_to_snapshot(code, tick) for code, tick in data.items()}
         return xtquant_pb2.GetFullTickResponse(ticks=ticks)
 
+    @_xtdata_retry()
     def GetInstrumentDetail(self, request, context):
         """Get instrument info -> xtdata.get_instrument_detail"""
         detail = xtdata.get_instrument_detail(request.stock_code, request.is_complete)
@@ -128,11 +172,13 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
             extra_json=extra,
         )
 
+    @_xtdata_retry()
     def GetStockList(self, request, context):
         """Get sector constituents -> xtdata.get_stock_list_in_sector"""
         stocks = xtdata.get_stock_list_in_sector(request.sector_name)
         return xtquant_pb2.StockListResponse(stock_codes=stocks)
 
+    @_xtdata_retry()
     def GetSectorList(self, request, context):
         """Get all sector names -> xtdata.get_sector_list"""
         sectors = xtdata.get_sector_list()
@@ -141,67 +187,74 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
     def DownloadHistoryData(self, request, context):
         """Download historical data (server stream) -> xtdata.download_history_data2
 
-        Uses the batch download API with a progress callback.
-        Yields a DownloadProgress message each time an instrument completes.
+        Runs download in a background thread so we can stream progress via gRPC.
+        Uses our own counter instead of xtdata's global 'finished' field.
         """
-        progress_queue: queue.Queue = queue.Queue()
-
-        def on_progress(data):
-            # data = {'finished': 1, 'total': 50, 'stockcode': '000001.SZ', 'message': ''}
-            progress_queue.put(data)
-
         codes = list(request.stock_codes)
         period = request.period or "1d"
+        total_stocks = len(codes)
+        incrementally = True if request.incrementally else None
 
         logger.info(
-            "DownloadHistoryData request: %d stocks, period=%s, range=[%s, %s]",
-            len(codes), period, request.start_time, request.end_time,
+            "DownloadHistoryData request: %d stocks, period=%s, range=[%s, %s], incrementally=%s",
+            total_stocks, period, request.start_time, request.end_time, incrementally,
         )
 
-        # download_history_data2 is synchronous and blocks until all done,
-        # so run it in a background thread to allow streaming progress
+        if total_stocks == 0:
+            yield xtquant_pb2.DownloadProgress(
+                total=0, finished=0, stock_code="", message="No instruments to download",
+            )
+            return
+
+        progress_queue: queue.Queue = queue.Queue()
         download_done = threading.Event()
-        download_error = [None]  # mutable container for thread exception
+        download_error = [None]
 
         def do_download():
             try:
-                logger.info("Download thread started, calling download_history_data2 ...")
-                xtdata.download_history_data2(
-                    codes,
+                kwargs = dict(
                     period=period,
                     start_time=request.start_time,
                     end_time=request.end_time,
-                    callback=on_progress,
+                    callback=lambda data: progress_queue.put(data),
                 )
-                logger.info("Download thread finished successfully")
+                if incrementally is not None:
+                    kwargs["incrementally"] = incrementally
+                xtdata.download_history_data2(codes, **kwargs)
             except Exception as e:
-                logger.error("Download thread error: %s", e)
+                logger.error("Download error: %s", e)
                 download_error[0] = e
             finally:
                 download_done.set()
 
         threading.Thread(target=do_download, daemon=True).start()
 
-        # Yield an initial message so the client knows the download has started
-        # Use 0 for total until xtdata reports the actual count via callback
         yield xtquant_pb2.DownloadProgress(
-            total=0, finished=0, stock_code="", message=f"Starting download: {len(codes)} instruments",
+            total=total_stocks, finished=0, stock_code="",
+            message=f"Starting download: {total_stocks} instruments",
         )
 
         finished_count = 0
-        actual_total = len(codes)
+        wait_ticks = 0
         while not download_done.is_set() or not progress_queue.empty():
             try:
                 data = progress_queue.get(timeout=0.5)
             except queue.Empty:
+                wait_ticks += 1
+                if wait_ticks % 20 == 0:
+                    logger.info(
+                        "Download in progress... (%.0fs, finished: %d/%d)",
+                        wait_ticks * 0.5, finished_count, total_stocks,
+                    )
                 continue
 
+            wait_ticks = 0
             finished_count += 1
-            actual_total = data.get("total", actual_total)
             stock_code = data.get("stockcode", "")
-            logger.info("Download progress: [%d/%d] %s", finished_count, actual_total, stock_code)
+            if finished_count % 100 == 0 or finished_count <= 3 or finished_count == total_stocks:
+                logger.info("Download progress: [%d/%d] %s", finished_count, total_stocks, stock_code)
             yield xtquant_pb2.DownloadProgress(
-                total=actual_total,
+                total=total_stocks,
                 finished=finished_count,
                 stock_code=stock_code,
                 message=data.get("message", ""),
@@ -211,15 +264,18 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
             msg = f"Download failed: {download_error[0]}"
             logger.error(msg)
             yield xtquant_pb2.DownloadProgress(
-                total=actual_total, finished=finished_count, stock_code="", message=msg,
+                total=total_stocks, finished=finished_count, stock_code="", message=msg,
             )
-        elif finished_count == 0 and len(codes) == 0:
+        elif finished_count == 0 and total_stocks > 0:
+            logger.info("Download complete: no new data to download (data already up-to-date)")
             yield xtquant_pb2.DownloadProgress(
-                total=0, finished=0, stock_code="", message="No instruments to download",
+                total=total_stocks, finished=total_stocks, stock_code="",
+                message="Complete - data already up-to-date",
             )
         else:
-            logger.info("Download complete: %d/%d instruments", finished_count, actual_total)
+            logger.info("Download complete: %d/%d instruments", finished_count, total_stocks)
 
+    @_xtdata_retry()
     def GetTradingDates(self, request, context):
         """Get trading dates -> xtdata.get_trading_dates"""
         count = request.count if request.count != 0 else -1
@@ -231,6 +287,7 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
         )
         return xtquant_pb2.GetTradingDatesResponse(dates=[int(d) for d in dates])
 
+    @_xtdata_retry()
     def GetFinancialData(self, request, context):
         """Get financial data (JSON response) -> xtdata.get_financial_data
 
@@ -259,64 +316,70 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
     def DownloadFinancialData(self, request, context):
         """Download financial data (server stream) -> xtdata.download_financial_data2
 
-        Same streaming pattern as DownloadHistoryData: background thread + queue.
-        Reuses DownloadProgress message for progress updates.
+        Same pattern as DownloadHistoryData: background thread + queue.
         """
-        progress_queue: queue.Queue = queue.Queue()
-
-        def on_progress(data):
-            progress_queue.put(data)
-
         codes = list(request.stock_codes)
         tables = list(request.table_list) or []
+        total_stocks = len(codes)
 
         logger.info(
             "DownloadFinancialData request: %d stocks, tables=%s, range=[%s, %s]",
-            len(codes), tables, request.start_time, request.end_time,
+            total_stocks, tables, request.start_time, request.end_time,
         )
 
+        if total_stocks == 0:
+            yield xtquant_pb2.DownloadProgress(
+                total=0, finished=0, stock_code="", message="No stocks to download",
+            )
+            return
+
+        progress_queue: queue.Queue = queue.Queue()
         download_done = threading.Event()
         download_error = [None]
 
         def do_download():
             try:
-                logger.info("Financial download thread started ...")
                 xtdata.download_financial_data2(
                     codes,
                     table_list=tables,
                     start_time=request.start_time,
                     end_time=request.end_time,
-                    callback=on_progress,
+                    callback=lambda data: progress_queue.put(data),
                 )
-                logger.info("Financial download thread finished successfully")
             except Exception as e:
-                logger.error("Financial download thread error: %s", e)
+                logger.error("Financial download error: %s", e)
                 download_error[0] = e
             finally:
                 download_done.set()
 
         threading.Thread(target=do_download, daemon=True).start()
 
-        # total from xtdata callback = stocks × tables; use 0 until first callback arrives
         yield xtquant_pb2.DownloadProgress(
-            total=0, finished=0, stock_code="",
-            message=f"Starting financial download: {len(codes)} stocks, tables={tables}",
+            total=total_stocks, finished=0, stock_code="",
+            message=f"Starting financial download: {total_stocks} stocks, tables={tables}",
         )
 
         finished_count = 0
-        actual_total = len(codes) * max(len(tables), 1)
+        wait_ticks = 0
         while not download_done.is_set() or not progress_queue.empty():
             try:
                 data = progress_queue.get(timeout=0.5)
             except queue.Empty:
+                wait_ticks += 1
+                if wait_ticks % 20 == 0:
+                    logger.info(
+                        "Financial download in progress... (%.0fs, finished: %d/%d)",
+                        wait_ticks * 0.5, finished_count, total_stocks,
+                    )
                 continue
 
+            wait_ticks = 0
             finished_count += 1
-            actual_total = data.get("total", actual_total)
             stock_code = data.get("stockcode", "")
-            logger.info("Financial download progress: [%d/%d] %s", finished_count, actual_total, stock_code)
+            if finished_count % 100 == 0 or finished_count <= 3 or finished_count == total_stocks:
+                logger.info("Financial progress: [%d/%d] %s", finished_count, total_stocks, stock_code)
             yield xtquant_pb2.DownloadProgress(
-                total=actual_total,
+                total=total_stocks,
                 finished=finished_count,
                 stock_code=stock_code,
                 message=data.get("message", ""),
@@ -326,15 +389,18 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
             msg = f"Financial download failed: {download_error[0]}"
             logger.error(msg)
             yield xtquant_pb2.DownloadProgress(
-                total=actual_total, finished=finished_count, stock_code="", message=msg,
+                total=total_stocks, finished=finished_count, stock_code="", message=msg,
             )
-        elif finished_count == 0 and len(codes) == 0:
+        elif finished_count == 0 and total_stocks > 0:
+            logger.info("Financial download complete: data already up-to-date")
             yield xtquant_pb2.DownloadProgress(
-                total=0, finished=0, stock_code="", message="No stocks to download",
+                total=total_stocks, finished=total_stocks, stock_code="",
+                message="Complete - data already up-to-date",
             )
         else:
-            logger.info("Financial download complete: %d/%d stocks", finished_count, actual_total)
+            logger.info("Financial download complete: %d/%d stocks", finished_count, total_stocks)
 
+    @_xtdata_retry()
     def GetValuationMetrics(self, request, context):
         """Get valuation metrics for a list of stocks.
 
