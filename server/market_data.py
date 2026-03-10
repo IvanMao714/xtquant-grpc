@@ -4,9 +4,7 @@ Exposes xtdata market-data APIs to remote gRPC clients,
 supporting kline queries, tick snapshots, streaming subscriptions, etc.
 """
 
-import gc
 import json
-import os
 import queue
 import logging
 import threading
@@ -14,37 +12,12 @@ import functools
 import time
 
 import grpc
-import numpy as np
 import pandas as pd
 from xtquant import xtdata
 
 from pb import xtquant_pb2, xtquant_pb2_grpc
 
 logger = logging.getLogger(__name__)
-
-
-def _get_mem_gb():
-    """Get current process RSS in GB."""
-    try:
-        import psutil
-        return psutil.Process(os.getpid()).memory_info().rss / (1024 ** 3)
-    except ImportError:
-        pass
-    try:
-        import ctypes
-        from ctypes import wintypes
-        class PMC(ctypes.Structure):
-            _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
-                         ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
-                         ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                         ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                         ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
-        pmc = PMC()
-        pmc.cb = ctypes.sizeof(pmc)
-        ctypes.windll.psapi.GetProcessMemoryInfo(ctypes.windll.kernel32.GetCurrentProcess(), ctypes.byref(pmc), pmc.cb)
-        return pmc.WorkingSetSize / (1024 ** 3)
-    except Exception:
-        return 0.0
 
 
 def _xtdata_retry(max_retries=2, retry_delay=3):
@@ -119,61 +92,6 @@ def _append_df_columns(code: str, df: pd.DataFrame, cols: dict):
     )
 
 
-_LOCAL_FIELD_MAP = [
-    ("open", "open"),
-    ("high", "high"),
-    ("low", "low"),
-    ("close", "close"),
-    ("volume", "volume"),
-    ("amount", "amount"),
-    ("pre_close", "preClose"),
-    ("suspend_flag", "suspendFlag"),
-    ("settlement_price", "settelmentPrice"),
-    ("open_interest", "openInterest"),
-]
-
-
-def _convert_local_data(data: dict, cols: dict):
-    """Convert get_local_data {field: DataFrame(stocks x times)} to columnar format.
-
-    get_local_data returns {field_name: DataFrame} where each DataFrame has
-    index=stock_codes and columns=timestamps (int ms).  This avoids MiniQMT's
-    in-process cache that causes the 30 GB memory leak.
-    """
-    ref_df = None
-    for v in data.values():
-        if isinstance(v, pd.DataFrame) and not v.empty:
-            ref_df = v
-            break
-    if ref_df is None:
-        return
-
-    stocks = ref_df.index.tolist()
-    times = ref_df.columns.tolist()
-    n_times = len(times)
-    if n_times == 0:
-        return
-
-    int_times = [int(t) for t in times]
-    for stock in stocks:
-        cols["stock_code"].extend([stock] * n_times)
-        cols["time"].extend(int_times)
-
-    total = len(stocks) * n_times
-    for proto_field, xt_field in _LOCAL_FIELD_MAP:
-        if xt_field in data and isinstance(data[xt_field], pd.DataFrame) and data[xt_field].size > 0:
-            flat = np.nan_to_num(
-                data[xt_field].reindex(stocks).values.flatten(), nan=0.0
-            )
-            if proto_field == "suspend_flag":
-                cols[proto_field].extend(flat.astype(int).tolist())
-            else:
-                cols[proto_field].extend(flat.astype(float).tolist())
-        else:
-            default = 0 if proto_field == "suspend_flag" else 0.0
-            cols[proto_field].extend([default] * total)
-
-
 def _tick_to_snapshot(code: str, tick: dict) -> xtquant_pb2.TickSnapshot:
     """Convert an xtdata tick dict to a TickSnapshot message."""
     return xtquant_pb2.TickSnapshot(
@@ -201,59 +119,27 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
 
     @_xtdata_retry()
     def GetMarketData(self, request, context):
-        """Get kline data — tries get_local_data first, falls back to get_market_data_ex."""
+        """Get kline data -> xtdata.get_market_data_ex"""
+        # proto3 int32 defaults to 0; treat 0 as "fetch all"
         count = request.count if request.count != 0 else -1
-        stock_list = list(request.stock_codes)
-        period = request.period or "1d"
-        mem_before = _get_mem_gb()
-
-        cols = {k: [] for k in [
-            "stock_code", "time", "open", "high", "low", "close",
-            "volume", "amount", "pre_close", "suspend_flag",
-            "settlement_price", "open_interest",
-        ]}
-
-        data = xtdata.get_local_data(
+        data = xtdata.get_market_data_ex(
             [],
-            stock_list,
-            period=period,
+            list(request.stock_codes),
+            period=request.period or "1d",
             start_time=request.start_time,
             end_time=request.end_time,
             count=count,
             dividend_type=request.dividend_type or "none",
             fill_data=request.fill_data,
         )
-        _convert_local_data(data, cols)
-        source = "local"
-        del data
-
-        if not cols["stock_code"]:
-            source = "remote"
-            data = xtdata.get_market_data_ex(
-                [],
-                stock_list,
-                period=period,
-                start_time=request.start_time,
-                end_time=request.end_time,
-                count=count,
-                dividend_type=request.dividend_type or "none",
-                fill_data=request.fill_data,
-            )
-            for code, df in data.items():
-                _append_df_columns(code, df, cols)
-            del data
-
-        resp = xtquant_pb2.GetMarketDataResponse(**cols)
-        n_rows = len(cols["stock_code"])
-        del cols
-        gc.collect()
-        mem_after = _get_mem_gb()
-        logger.info(
-            "GetMarketData(%s): %d stocks, %d rows, period=%s, range=[%s,%s] | mem: %.2f -> %.2f GB (delta: %+.2f GB)",
-            source, len(stock_list), n_rows, period, request.start_time, request.end_time,
-            mem_before, mem_after, mem_after - mem_before,
-        )
-        return resp
+        cols = {k: [] for k in [
+            "stock_code", "time", "open", "high", "low", "close",
+            "volume", "amount", "pre_close", "suspend_flag",
+            "settlement_price", "open_interest",
+        ]}
+        for code, df in data.items():
+            _append_df_columns(code, df, cols)
+        return xtquant_pb2.GetMarketDataResponse(**cols)
 
     @_xtdata_retry()
     def GetFullTick(self, request, context):
