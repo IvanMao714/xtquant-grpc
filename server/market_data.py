@@ -201,11 +201,17 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
 
     @_xtdata_retry()
     def GetMarketData(self, request, context):
-        """Get kline data -> xtdata.get_local_data (bypasses MiniQMT cache)"""
+        """Get kline data — tries get_local_data first, falls back to get_market_data_ex."""
         count = request.count if request.count != 0 else -1
         stock_list = list(request.stock_codes)
         period = request.period or "1d"
         mem_before = _get_mem_gb()
+
+        cols = {k: [] for k in [
+            "stock_code", "time", "open", "high", "low", "close",
+            "volume", "amount", "pre_close", "suspend_flag",
+            "settlement_price", "open_interest",
+        ]}
 
         data = xtdata.get_local_data(
             [],
@@ -217,20 +223,34 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
             dividend_type=request.dividend_type or "none",
             fill_data=request.fill_data,
         )
-
-        cols = {k: [] for k in [
-            "stock_code", "time", "open", "high", "low", "close",
-            "volume", "amount", "pre_close", "suspend_flag",
-            "settlement_price", "open_interest",
-        ]}
         _convert_local_data(data, cols)
+        source = "local"
+        del data
+
+        if not cols["stock_code"]:
+            source = "remote"
+            data = xtdata.get_market_data_ex(
+                [],
+                stock_list,
+                period=period,
+                start_time=request.start_time,
+                end_time=request.end_time,
+                count=count,
+                dividend_type=request.dividend_type or "none",
+                fill_data=request.fill_data,
+            )
+            for code, df in data.items():
+                _append_df_columns(code, df, cols)
+            del data
+
         resp = xtquant_pb2.GetMarketDataResponse(**cols)
-        del data, cols
+        n_rows = len(cols["stock_code"])
+        del cols
         gc.collect()
         mem_after = _get_mem_gb()
         logger.info(
-            "GetMarketData: %d stocks, period=%s, range=[%s,%s] | mem: %.2f -> %.2f GB (delta: %+.2f GB)",
-            len(stock_list), period, request.start_time, request.end_time,
+            "GetMarketData(%s): %d stocks, %d rows, period=%s, range=[%s,%s] | mem: %.2f -> %.2f GB (delta: %+.2f GB)",
+            source, len(stock_list), n_rows, period, request.start_time, request.end_time,
             mem_before, mem_after, mem_after - mem_before,
         )
         return resp
