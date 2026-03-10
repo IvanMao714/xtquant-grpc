@@ -152,8 +152,8 @@ def main():
                         help="MiniQMT userdata_mini path; market-data only if omitted")
     parser.add_argument("--session-id", type=int, default=0,
                         help="Trading session ID (default: current timestamp)")
-    parser.add_argument("--mem-limit-gb", type=float, default=8.0,
-                        help="Memory limit in GB; server auto-restarts when exceeded (default: 8, 0=disable)")
+    parser.add_argument("--mem-limit-gb", type=float, default=39.0,
+                        help="Memory limit in GB; server auto-restarts when exceeded (default: 39, 0=disable)")
     args = parser.parse_args()
 
     restart_count = 0
