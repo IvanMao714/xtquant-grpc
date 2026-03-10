@@ -14,6 +14,7 @@ import functools
 import time
 
 import grpc
+import numpy as np
 import pandas as pd
 from xtquant import xtdata
 
@@ -118,6 +119,61 @@ def _append_df_columns(code: str, df: pd.DataFrame, cols: dict):
     )
 
 
+_LOCAL_FIELD_MAP = [
+    ("open", "open"),
+    ("high", "high"),
+    ("low", "low"),
+    ("close", "close"),
+    ("volume", "volume"),
+    ("amount", "amount"),
+    ("pre_close", "preClose"),
+    ("suspend_flag", "suspendFlag"),
+    ("settlement_price", "settelmentPrice"),
+    ("open_interest", "openInterest"),
+]
+
+
+def _convert_local_data(data: dict, cols: dict):
+    """Convert get_local_data {field: DataFrame(stocks x times)} to columnar format.
+
+    get_local_data returns {field_name: DataFrame} where each DataFrame has
+    index=stock_codes and columns=timestamps (int ms).  This avoids MiniQMT's
+    in-process cache that causes the 30 GB memory leak.
+    """
+    ref_df = None
+    for v in data.values():
+        if isinstance(v, pd.DataFrame) and not v.empty:
+            ref_df = v
+            break
+    if ref_df is None:
+        return
+
+    stocks = ref_df.index.tolist()
+    times = ref_df.columns.tolist()
+    n_times = len(times)
+    if n_times == 0:
+        return
+
+    int_times = [int(t) for t in times]
+    for stock in stocks:
+        cols["stock_code"].extend([stock] * n_times)
+        cols["time"].extend(int_times)
+
+    total = len(stocks) * n_times
+    for proto_field, xt_field in _LOCAL_FIELD_MAP:
+        if xt_field in data and isinstance(data[xt_field], pd.DataFrame) and data[xt_field].size > 0:
+            flat = np.nan_to_num(
+                data[xt_field].reindex(stocks).values.flatten(), nan=0.0
+            )
+            if proto_field == "suspend_flag":
+                cols[proto_field].extend(flat.astype(int).tolist())
+            else:
+                cols[proto_field].extend(flat.astype(float).tolist())
+        else:
+            default = 0 if proto_field == "suspend_flag" else 0.0
+            cols[proto_field].extend([default] * total)
+
+
 def _tick_to_snapshot(code: str, tick: dict) -> xtquant_pb2.TickSnapshot:
     """Convert an xtdata tick dict to a TickSnapshot message."""
     return xtquant_pb2.TickSnapshot(
@@ -145,33 +201,36 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
 
     @_xtdata_retry()
     def GetMarketData(self, request, context):
-        """Get kline data -> xtdata.get_market_data_ex"""
+        """Get kline data -> xtdata.get_local_data (bypasses MiniQMT cache)"""
         count = request.count if request.count != 0 else -1
+        stock_list = list(request.stock_codes)
+        period = request.period or "1d"
         mem_before = _get_mem_gb()
-        data = xtdata.get_market_data_ex(
+
+        data = xtdata.get_local_data(
             [],
-            list(request.stock_codes),
-            period=request.period or "1d",
+            stock_list,
+            period=period,
             start_time=request.start_time,
             end_time=request.end_time,
             count=count,
             dividend_type=request.dividend_type or "none",
             fill_data=request.fill_data,
         )
+
         cols = {k: [] for k in [
             "stock_code", "time", "open", "high", "low", "close",
             "volume", "amount", "pre_close", "suspend_flag",
             "settlement_price", "open_interest",
         ]}
-        for code, df in data.items():
-            _append_df_columns(code, df, cols)
+        _convert_local_data(data, cols)
         resp = xtquant_pb2.GetMarketDataResponse(**cols)
         del data, cols
         gc.collect()
         mem_after = _get_mem_gb()
         logger.info(
             "GetMarketData: %d stocks, period=%s, range=[%s,%s] | mem: %.2f -> %.2f GB (delta: %+.2f GB)",
-            len(request.stock_codes), request.period, request.start_time, request.end_time,
+            len(stock_list), period, request.start_time, request.end_time,
             mem_before, mem_after, mem_after - mem_before,
         )
         return resp
