@@ -4,7 +4,9 @@ Exposes xtdata market-data APIs to remote gRPC clients,
 supporting kline queries, tick snapshots, streaming subscriptions, etc.
 """
 
+import gc
 import json
+import os
 import queue
 import logging
 import threading
@@ -18,6 +20,30 @@ from xtquant import xtdata
 from pb import xtquant_pb2, xtquant_pb2_grpc
 
 logger = logging.getLogger(__name__)
+
+
+def _get_mem_gb():
+    """Get current process RSS in GB."""
+    try:
+        import psutil
+        return psutil.Process(os.getpid()).memory_info().rss / (1024 ** 3)
+    except ImportError:
+        pass
+    try:
+        import ctypes
+        from ctypes import wintypes
+        class PMC(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                         ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
+                         ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                         ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                         ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
+        pmc = PMC()
+        pmc.cb = ctypes.sizeof(pmc)
+        ctypes.windll.psapi.GetProcessMemoryInfo(ctypes.windll.kernel32.GetCurrentProcess(), ctypes.byref(pmc), pmc.cb)
+        return pmc.WorkingSetSize / (1024 ** 3)
+    except Exception:
+        return 0.0
 
 
 def _xtdata_retry(max_retries=2, retry_delay=3):
@@ -120,8 +146,8 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
     @_xtdata_retry()
     def GetMarketData(self, request, context):
         """Get kline data -> xtdata.get_market_data_ex"""
-        # proto3 int32 defaults to 0; treat 0 as "fetch all"
         count = request.count if request.count != 0 else -1
+        mem_before = _get_mem_gb()
         data = xtdata.get_market_data_ex(
             [],
             list(request.stock_codes),
@@ -139,7 +165,16 @@ class MarketDataServicer(xtquant_pb2_grpc.MarketDataServiceServicer):
         ]}
         for code, df in data.items():
             _append_df_columns(code, df, cols)
-        return xtquant_pb2.GetMarketDataResponse(**cols)
+        resp = xtquant_pb2.GetMarketDataResponse(**cols)
+        del data, cols
+        gc.collect()
+        mem_after = _get_mem_gb()
+        logger.info(
+            "GetMarketData: %d stocks, period=%s, range=[%s,%s] | mem: %.2f -> %.2f GB (delta: %+.2f GB)",
+            len(request.stock_codes), request.period, request.start_time, request.end_time,
+            mem_before, mem_after, mem_after - mem_before,
+        )
+        return resp
 
     @_xtdata_retry()
     def GetFullTick(self, request, context):
